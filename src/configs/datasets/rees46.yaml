@@ -1,0 +1,55 @@
+# ============================================================================
+# REES46 Marketplace — Dataset Manifest
+# ============================================================================
+# Ecosystem: transactional_marketplace
+# Churn window: 180 days
+# Customers: ~500K | Events: ~5M
+# Source: REES46 public dataset
+# ============================================================================
+
+adapter:
+  type: rees46
+  plugin: null
+
+root_directory: null
+
+dataset:
+  name: rees46
+  ecosystem_type: transactional_marketplace
+  citation: "REES46 — E-commerce dataset for behavioral research"
+  source_url: "https://rees46.com/"
+  n_customers_approx: 500000
+  n_orders_approx: 5000000
+
+churn:
+  strategy: inactivity
+  uses_native_churn_label: false
+  prediction_window_days: 180
+  justification: >
+    180 days — matches Olist for cross-dataset comparability.
+
+features:
+  available_groups:
+    - purchase
+    - monetary
+    - inactivity
+    - engagement
+    - cadence
+
+schema:
+  version: 2
+  column_mapping:
+    user_id: customer_id
+    timestamp: event_time
+    price: transaction_value
+    item_id: product_id
+  synthetic_columns: {}
+
+files:
+  required:
+    events: rees46_events.csv
+  optional:
+    users: rees46_users.csv
+    items: rees46_items.csv
+
+preprocessing: {}

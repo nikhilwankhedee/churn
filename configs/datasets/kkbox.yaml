@@ -1,0 +1,57 @@
+# ============================================================================
+# KKBox (WSDM Cup 2018) — Dataset Manifest
+# ============================================================================
+# Ecosystem: subscription
+# Churn window: WSDM 30-day inactivity (derived by WSDMChurnLabeller)
+# Customers: ~1,000,000
+# Source: https://www.kaggle.com/competitions/kkbox-churn-prediction-challenge
+# ============================================================================
+
+adapter:
+  type: kkbox
+  plugin: null
+
+root_directory: null
+
+dataset:
+  name: kkbox
+  ecosystem_type: subscription
+  citation: >
+    WSDM Cup 2018 Challenge — Churn Prediction.
+  source_url: "https://www.kaggle.com/competitions/kkbox-churn-prediction-challenge"
+  n_customers_approx: 1000000
+
+churn:
+  strategy: subscription
+  uses_native_churn_label: true
+  prediction_window_days: null
+
+features:
+  available_groups:
+    - kkbox
+    - static
+    - inactivity
+    - cadence
+
+schema:
+  version: 2
+  column_mapping: {}
+  synthetic_columns: {}
+
+files:
+  required:
+    data:
+      - transactions.csv
+      - transactions_v2.csv
+  optional:
+    logs:
+      - user_logs.csv
+      - user_logs_v2.csv
+    members:
+      - members.csv
+      - members_v3.csv
+    train:
+      - train.csv
+      - train_v2.csv
+
+preprocessing: {}

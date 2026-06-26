@@ -1,0 +1,61 @@
+# ============================================================================
+# Online Retail II (UK Gift Retail) — Dataset Manifest
+# ============================================================================
+# Ecosystem: habitual_retail
+# Churn window: 90 days
+# Customers: ~5K | Orders: ~1M line items
+# Source: UCI Machine Learning Repository
+# ============================================================================
+
+adapter:
+  type: online_retail_ii
+  plugin: null
+
+root_directory: null
+
+dataset:
+  name: online_retail_ii
+  ecosystem_type: habitual_retail
+  citation: >
+    Chen, D. Online Retail II Data Set. UCI Machine Learning Repository.
+  source_url: "https://archive.ics.uci.edu/ml/datasets/online+retail+II"
+  n_customers_approx: 5000
+  n_orders_approx: 1000000
+
+churn:
+  strategy: inactivity
+  uses_native_churn_label: false
+  prediction_window_days: 90
+  justification: >
+    90 days — gift retail has seasonal patterns; 90 days captures
+    ~2x median inter-purchase interval.
+
+features:
+  available_groups:
+    - purchase
+    - monetary
+    - inactivity
+    - cadence
+
+schema:
+  version: 2
+  column_mapping:
+    'Customer ID': customer_id
+    InvoiceDate: event_time
+    StockCode: product_id
+  computed_columns:
+    transaction_value: "Quantity * Price"
+  synthetic_columns:
+    event_type: purchase
+
+files:
+  required:
+    year_1: online_retail_II_2009_2010.csv
+    year_2: online_retail_II_2010_2011.csv
+  optional: {}
+
+preprocessing:
+  encoding: ISO-8859-1
+  remove_cancellation_prefix: 'C'
+  min_quantity: 1
+  min_price: 0

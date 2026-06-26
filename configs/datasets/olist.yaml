@@ -1,0 +1,82 @@
+# ============================================================================
+# Olist Brazilian E-Commerce — Dataset Manifest
+# ============================================================================
+# Ecosystem: transactional_marketplace
+# Churn window: 180 days
+# Customers: ~96K unique | Orders: ~99K
+# Source: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+# ============================================================================
+
+adapter:
+  type: olist
+  plugin: null
+
+root_directory: null
+
+dataset:
+  name: olist
+  ecosystem_type: transactional_marketplace
+  citation: >
+    Olist, Brazilian E-Commerce Public Dataset by Olist.
+    https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+  source_url: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+  n_customers_approx: 96096
+  n_orders_approx: 99441
+
+churn:
+  strategy: inactivity
+  uses_native_churn_label: false
+  prediction_window_days: 180
+  justification: >
+    180 days chosen based on Olist's sparse repeat-purchase behaviour;
+    median inter-purchase interval is ~60 days, so 3x median covers
+    95%+ of repurchase gap.
+
+features:
+  available_groups:
+    - purchase
+    - monetary
+    - inactivity
+    - review
+    - delivery
+    - payment
+    - cadence
+
+schema:
+  version: 2
+  column_mapping:
+    customer_unique_id: customer_id
+    order_purchase_timestamp: event_time
+    payment_value: transaction_value
+  synthetic_columns:
+    event_type: purchase
+
+files:
+  required:
+    orders: olist_orders_dataset.csv
+    customers: olist_customers_dataset.csv
+    reviews: olist_order_reviews_dataset.csv
+    payments: olist_order_payments_dataset.csv
+    items: olist_order_items_dataset.csv
+    products: olist_products_dataset.csv
+    sellers: olist_sellers_dataset.csv
+  optional:
+    geolocation: olist_geolocation_dataset.csv
+    category: product_category_name_translation.csv
+
+preprocessing:
+  timestamp_columns:
+    - order_purchase_timestamp
+    - order_approved_at
+    - order_delivered_carrier_date
+    - order_delivered_customer_date
+    - order_estimated_delivery_date
+    - shipping_limit_date
+    - review_creation_date
+    - review_answer_timestamp
+  drop_null_timestamp: order_purchase_timestamp
+  timestamp_range: ['2016-01-01', '2019-01-01']
+  non_negative_columns: [price, freight_value]
+  outlier_cap_percentile: 0.999
+  median_fill: [review_score]
+  zero_fill: [payment_installments, payment_value, price, freight_value]
