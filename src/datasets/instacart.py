@@ -159,21 +159,21 @@ class InstacartAdapter(BaseDatasetAdapter):
         # days_since_prior_order.  Instacart ships no calendar timestamps,
         # so we reconstruct each user's timeline from inter-order gaps.
         #
-        # IMPORTANT (root-cause fix): the timeline must be anchored to a
-        # fixed observation horizon END, with each user's *last* order placed
-        # at (END - residual).  The previous implementation subtracted each
-        # user's maximum from their cumulative days (`x.max() - x`), which
-        # collapsed every user's final order onto the global max date.  That
-        # made inactivity-based churn unobservable (every active customer
-        # always had an order at the horizon -> zero churn) and produced a
-        # 100% train/test customer overlap.  Using cumulative days from each
-        # user's first order keeps shorter-lived users' last orders strictly
-        # before END, so a genuine inactivity gap can exist.
+        # Strategy — rank-based temporal distribution:
+        #   1. Preserve each user's real inter-order spacing exactly.
+        #   2. Distribute users across a fixed observation window so that
+        #      users with longer histories start earlier and users with
+        #      shorter histories start later.
+        #   3. No user's final order coincides with another's (except by
+        #      chance of identical spans AND rank, which is negligible).
+        #
+        # This avoids the previous approach's failure mode where anchoring
+        # all users' final orders to a single horizon date collapsed the
+        # temporal distribution and produced degenerate churn labels.
         if "days_since_prior_order" in df.columns and "order_number" in df.columns:
             df["days_since_prior_order"] = (
                 pd.to_numeric(df["days_since_prior_order"], errors="coerce").fillna(0)
             )
-            timeline_end = pd.Timestamp("2017-03-21")
 
             # Reconstruct the timeline at order level (product rows within an
             # order must not inflate the cumulative-day sum).
@@ -189,13 +189,49 @@ class InstacartAdapter(BaseDatasetAdapter):
                     .drop_duplicates(subset=["user_id"])
                     .copy()
                 )
+
+            # Cumulative days from each user's first order.
             order_lvl["days_from_start"] = (
                 order_lvl.groupby("user_id")["days_since_prior_order"]
                 .cumsum().fillna(0)
             )
-            global_span = float(order_lvl["days_from_start"].max())
-            order_lvl["event_time"] = timeline_end - pd.to_timedelta(
-                global_span - order_lvl["days_from_start"], unit="D"
+
+            # Per-user total span (days between first and last order).
+            user_spans = order_lvl.groupby("user_id")["days_from_start"].max()
+            user_spans.name = "user_span"
+
+            # Rank users by span (ascending) — longer-lived users get earlier
+            # start positions so their timelines fit within the window.
+            user_ranks = user_spans.rank(method="first", ascending=True) - 1
+            n_users = len(user_ranks)
+
+            # Observation window: accommodate the longest user span plus a
+            # margin proportional to the span distribution (p99 + 10%).
+            p99_span = float(user_spans.quantile(0.99))
+            observation_span = max(
+                float(user_spans.max()) + 1,
+                p99_span * 1.10 + 1,
+            )
+            timeline_end = pd.Timestamp("2017-03-21")
+            timeline_start = timeline_end - pd.Timedelta(days=observation_span)
+
+            # Place each user's first order within the feasible range.
+            # Feasible range for user u: [0, observation_span - user_span[u]]
+            # Rank-based placement distributes users deterministically across
+            # this range, avoiding endpoint collisions.
+            user_starts = pd.Series(
+                (user_ranks / max(n_users - 1, 1))
+                * (observation_span - user_spans),
+                index=user_ranks.index,
+            )
+            user_starts_dict = user_starts.to_dict()
+
+            # Assign event_time = timeline_start + start_offset + days_from_start
+            order_lvl["event_time"] = order_lvl.apply(
+                lambda r: timeline_start + pd.Timedelta(
+                    days=user_starts_dict[r["user_id"]] + r["days_from_start"]
+                ),
+                axis=1,
             )
 
             if "order_id" in order_lvl.columns:
