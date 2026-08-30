@@ -12,9 +12,10 @@ from typing import Optional, List, Dict, Any
 
 from src.datasets.base import BaseDatasetAdapter
 from src.config import (
-    ORDERS_FILE, CUSTOMERS_FILE, REVIEWS_FILE,
+    DATA_DIR, ORDERS_FILE, CUSTOMERS_FILE, REVIEWS_FILE,
     PAYMENTS_FILE, ITEMS_FILE, PRODUCTS_FILE, SELLERS_FILE,
     TIMESTAMP_MIN, TIMESTAMP_MAX, OUTLIER_PRICING_PERCENTILE,
+    ON_KAGGLE, OLIST_DIR,
 )
 from src.utils import get_logger
 
@@ -64,11 +65,8 @@ class OlistAdapter(BaseDatasetAdapter):
         return 180
 
     @property
-    def required_files(self) -> list:
-        return [
-            ORDERS_FILE, CUSTOMERS_FILE, REVIEWS_FILE,
-            PAYMENTS_FILE, ITEMS_FILE, PRODUCTS_FILE, SELLERS_FILE,
-        ]
+    def data_dir(self) -> str:
+        return OLIST_DIR if ON_KAGGLE else DATA_DIR
 
     # ── Data loading ─────────────────────────────────────────────────
 
@@ -245,19 +243,11 @@ class OlistAdapter(BaseDatasetAdapter):
 
     def standardize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
         mapping = {
+            "customer_unique_id": "customer_id",
             "order_purchase_timestamp": "event_time",
             "payment_value": "transaction_value",
         }
         df = df.rename(columns=mapping, errors="ignore")
-
-        # In olist, customer_id is order-level (unique per order).
-        # customer_unique_id is the actual customer identifier.
-        # We must use customer_unique_id for correct churn labeling.
-        if "customer_unique_id" in df.columns:
-            df = df.rename(columns={
-                "customer_id": "order_customer_id",
-                "customer_unique_id": "customer_id",
-            })
 
         # Add event_type — all rows are purchases for Olist
         df["event_type"] = "purchase"

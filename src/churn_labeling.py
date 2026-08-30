@@ -11,12 +11,11 @@ inactivity-based labeling is bypassed.
 Labels are always computed from data strictly after the cutoff —
 never before it — ensuring no temporal leakage into features.
 """
-from typing import List, Tuple
-
 import pandas as pd
-from sklearn.model_selection import train_test_split
+import numpy as np
+from typing import Tuple, Optional
 
-from src.config import PREDICTION_WINDOW_DAYS, RANDOM_SEED, TRAIN_SPLIT_QUANTILE
+from src.config import PREDICTION_WINDOW_DAYS, TRAIN_SPLIT_QUANTILE
 from src.utils import get_logger
 
 logger = get_logger(__name__)
@@ -113,60 +112,3 @@ def get_train_test_cutoffs(
         train_cutoff.date(), test_cutoff.date(),
     )
     return train_cutoff, test_cutoff
-
-
-def stratified_native_split(
-    labels: pd.DataFrame,
-    test_size: float = 0.3,
-    random_state: int = RANDOM_SEED,
-) -> Tuple[List[str], List[str], pd.DataFrame, pd.DataFrame]:
-    """Customer-level stratified 70/30 train/test split for native-label,
-    non-temporal datasets (e.g. credit_card, telco).
-
-    These datasets carry no genuine event timeline, so temporal cutoffs are
-    meaningless and a synthetic event_time must never be used as a
-    workaround.  Customers are split once here, stratified on the native
-    churn label; by construction no customer appears in both train and test.
-
-    Parameters
-    ----------
-    labels : pd.DataFrame
-        Native labels with 'customer_id' and 'churn' columns (as returned by
-        an adapter's ``get_native_churn_labels``).
-    test_size : float
-        Fraction of customers held out for test (default 0.3).
-    random_state : int
-        Fixed seed (RANDOM_SEED = 42) so every experiment condition produces
-        the identical split and cross-condition test identity is preserved.
-
-    Returns
-    -------
-    (train_cust_ids, test_cust_ids, train_labels, test_labels)
-    where the label frames keep the 'customer_id' + 'churn' columns (not
-    indexed), matching the ``get_native_churn_labels`` contract.
-    """
-    labels = (
-        labels[['customer_id', 'churn']]
-        .drop_duplicates(subset='customer_id')
-        .copy()
-    )
-    if labels['churn'].nunique() < 2:
-        raise ValueError(
-            "Stratified native split requires both churn classes present "
-            f"(found {labels['churn'].nunique()} class(es))"
-        )
-    train_lab, test_lab = train_test_split(
-        labels,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=labels['churn'],
-    )
-    train_cust_ids = train_lab['customer_id'].astype(str).tolist()
-    test_cust_ids = test_lab['customer_id'].astype(str).tolist()
-    logger.info(
-        "Stratified native split — train: %d (churn %.1f%%), "
-        "test: %d (churn %.1f%%)",
-        len(train_cust_ids), train_lab['churn'].mean() * 100,
-        len(test_cust_ids), test_lab['churn'].mean() * 100,
-    )
-    return train_cust_ids, test_cust_ids, train_lab, test_lab

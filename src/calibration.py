@@ -25,11 +25,12 @@ def plot_calibration_curves(
     n_bins: int = CALIBRATION_N_BINS,
     n_bootstrap: int = CALIBRATION_N_BOOTSTRAP,
     save_path: str = None,
+    suffix: str = '',
 ) -> None:
     ensure_dir(os.path.join(FIGURES_DIR, 'calibration'))
     if save_path is None:
         save_path = os.path.join(FIGURES_DIR, 'calibration',
-                                 'calibration_curves.png')
+                                 f'calibration_curves{suffix}.png')
 
     fig, ax = plt.subplots(figsize=(8, 6))
     y_test_arr = np.asarray(y_test)

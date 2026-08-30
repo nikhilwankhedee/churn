@@ -84,16 +84,6 @@ class BaseDatasetAdapter(ABC):
         """True if the dataset provides its own churn label (e.g. Telco)."""
         return False
 
-    @property
-    def has_temporal_data(self) -> bool:
-        """True if the dataset has genuine event timestamps.
-
-        Datasets without a real temporal dimension (e.g. Telco, whose
-        event_time is derived synthetically from tenure) override this to
-        False so feature engineering does not filter on event_time.
-        """
-        return True
-
     def get_native_churn_labels(
         self, df: pd.DataFrame, cutoff_date: pd.Timestamp,
     ) -> pd.DataFrame:
@@ -198,46 +188,10 @@ class BaseDatasetAdapter(ABC):
     # ── Data directory helper ────────────────────────────────────────
 
     @property
-    def required_files(self) -> List[str]:
-        """List of CSV filenames required by this adapter.
-
-        Override in subclasses to specify required files for validation.
-        """
-        return []
-
-    @property
-    def alternate_filenames(self) -> Dict[str, List[str]]:
-        """Map each required filename → list of acceptable alternate names.
-
-        Some datasets ship under different filenames depending on the
-        source (e.g. Kaggle vs direct download).  The dataset resolver
-        treats a required file as present if ANY of its alternates exists.
-        """
-        return {}
-
-    @property
     def data_dir(self) -> str:
         """Return the directory where raw data files are stored.
 
-        Resolution order:
-        1. _resolved_data_dir if set externally (via get_dataset/data_dir param)
-        2. Centralized dataset resolver (discovery, environment, config)
+        Adapters can override if they need custom logic (e.g. Kaggle paths).
         """
-        if hasattr(self, '_resolved_data_dir') and self._resolved_data_dir:
-            return str(self._resolved_data_dir)
-
-        from src.dataset_resolver import resolve_dataset_directory
-        try:
-            return resolve_dataset_directory(
-                dataset_name=self.dataset_name,
-                required_files=self.required_files or None,
-            )
-        except FileNotFoundError:
-            # Fall back to config-level default for backward compat
-            from src.config import DATA_DIR
-            return DATA_DIR
-
-    @data_dir.setter
-    def data_dir(self, value) -> None:
-        """Override the data directory for this adapter instance."""
-        self._resolved_data_dir = str(value) if value is not None else None
+        from src.config import DATA_DIR
+        return DATA_DIR

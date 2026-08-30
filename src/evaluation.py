@@ -3,13 +3,7 @@ Model evaluation — full classification metrics, threshold analysis,
 calibration data, expected calibration error (ECE), and imbalance analysis.
 
 Handles extreme imbalance gracefully (zero-division avoidance, NaN-safe scoring).
-
-Metrics produced per model (Section 29 of the experiment spec):
-    accuracy, precision, recall, f1, roc_auc, avg_precision (PR-AUC),
-    balanced_accuracy, mcc, brier_score, calibration_error,
-    training_time (sec), inference_time (sec).
 """
-import time
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional, Tuple
@@ -18,7 +12,6 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, brier_score_loss,
     precision_recall_curve, average_precision_score,
-    balanced_accuracy_score, matthews_corrcoef,
     roc_curve,
 )
 from sklearn.calibration import calibration_curve
@@ -34,9 +27,7 @@ def evaluate_model(
     y_test: pd.Series,
     model_name: str = 'model',
 ) -> Tuple[Dict[str, float], np.ndarray, Optional[np.ndarray]]:
-    t0 = time.perf_counter()
     y_pred = model.predict(X_test)
-    inference_time = time.perf_counter() - t0
 
     has_proba = hasattr(model, 'predict_proba')
     y_proba: Optional[np.ndarray] = None
@@ -55,12 +46,6 @@ def evaluate_model(
     metrics['precision'] = precision_score(y_test, y_pred, zero_division=0.0)
     metrics['recall'] = recall_score(y_test, y_pred, zero_division=0.0)
     metrics['f1'] = f1_score(y_test, y_pred, zero_division=0.0)
-    metrics['balanced_accuracy'] = balanced_accuracy_score(y_test, y_pred)
-    metrics['mcc'] = matthews_corrcoef(y_test, y_pred)
-    metrics['training_time'] = float(
-        getattr(model, '_train_time_sec', np.nan)
-    )
-    metrics['inference_time'] = float(inference_time)
 
     if y_proba is not None:
         try:

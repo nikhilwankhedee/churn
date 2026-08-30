@@ -34,10 +34,7 @@ STD_ENGAGEMENT_SIGNAL = 'engagement_signal'
 STD_SESSION_ID = 'session_id'
 STD_PRODUCT_ID = 'product_id'
 
-# Adapters emit static per-customer attributes under this prefix.
-STATIC_PREFIX = 'static_'
-
-PURCHASE_EVENT_TYPES = {'purchase', 'transaction', 'order', 'subscription_event'}
+PURCHASE_EVENT_TYPES = {'purchase', 'transaction', 'order'}
 
 
 # ── Group-level helpers ──────────────────────────────────────────────
@@ -366,14 +363,12 @@ def _engineer_cadence(
     lifetime = (timeline['last_purchase'] - timeline['first_purchase']).dt.days
     cadence = pd.DataFrame(index=timeline.index)
 
-    cadence['customer_lifetime_days'] = np.clip(lifetime, 0, None)
-    cadence['avg_days_between_orders'] = np.clip(
-        np.where(
-            timeline['n_orders'] > 1,
-            cadence['customer_lifetime_days'] / (timeline['n_orders'] - 1),
-            0.0,
-        ), 0, None,
-    )
+    cadence['customer_lifetime_days'] = lifetime.clip(lower=0)
+    cadence['avg_days_between_orders'] = np.where(
+        timeline['n_orders'] > 1,
+        cadence['customer_lifetime_days'] / (timeline['n_orders'] - 1),
+        0.0,
+    ).clip(lower=0)
 
     lifetime_months = cadence['customer_lifetime_days'] / 30.44
     cadence['avg_orders_per_month'] = np.where(
@@ -383,207 +378,6 @@ def _engineer_cadence(
     )
 
     return cadence
-
-
-# ── Feature group: static ────────────────────────────────────────────
-
-def _engineer_static(
-    df: pd.DataFrame, snapshot_date: pd.Timestamp,
-    customer_ids: Optional[List[str]] = None,
-) -> pd.DataFrame:
-    """Per-customer static attributes (e.g. Telco tenure, charges, dummies).
-
-    Columns are identified by the 'static_' prefix and aggregated with
-    first() per customer (they are constant within a customer).
-    """
-    if STD_CUSTOMER_ID not in df.columns:
-        return pd.DataFrame()
-    static_cols = [c for c in df.columns if c.startswith(STATIC_PREFIX)]
-    if not static_cols:
-        logger.info(
-            "Feature group 'static' — no '%s*' columns present", STATIC_PREFIX,
-        )
-        return pd.DataFrame()
-
-    events = df.copy()
-    if customer_ids is not None:
-        events = events[events[STD_CUSTOMER_ID].isin(customer_ids)]
-    if events.empty:
-        return pd.DataFrame()
-
-    static = events.groupby(STD_CUSTOMER_ID)[static_cols].first()
-    static = static.astype(np.float64, errors='ignore')
-    return static
-
-
-# ── Feature group: listening (e.g. Last.fm) ──────────────────────────
-
-def _engineer_listening(
-    df: pd.DataFrame, snapshot_date: pd.Timestamp,
-    customer_ids: Optional[List[str]] = None,
-) -> pd.DataFrame:
-    """Listening behaviour features: volume, diversity, cadence, recency.
-
-    Expected standardised columns: customer_id, event_time, product_id
-    (artist), track, event_type='purchase' (listening events mapped to
-    purchase so the generic event machinery can be reused).
-    """
-    if not _check_columns(df, [STD_CUSTOMER_ID, STD_EVENT_TIME], 'listening'):
-        return pd.DataFrame()
-
-    events = df.copy()
-    if customer_ids is not None:
-        events = events[events[STD_CUSTOMER_ID].isin(customer_ids)]
-    if events.empty:
-        return pd.DataFrame()
-
-    events['_day'] = events[STD_EVENT_TIME].dt.normalize()
-    grp = events.groupby(STD_CUSTOMER_ID)
-
-    listening = pd.DataFrame(index=events[STD_CUSTOMER_ID].unique())
-    listening.index.name = STD_CUSTOMER_ID
-
-    total = events.groupby(STD_CUSTOMER_ID).size()
-    listening['total_listens'] = total
-
-    if STD_PRODUCT_ID in events.columns:
-        listening['unique_artists'] = grp[STD_PRODUCT_ID].nunique()
-    if 'track' in events.columns:
-        listening['unique_tracks'] = grp['track'].nunique()
-
-    listening['active_days'] = grp['_day'].nunique()
-    active_days = listening['active_days'].clip(lower=1)
-    listening['avg_listens_per_day'] = listening['total_listens'] / active_days
-
-    last_listen = grp[STD_EVENT_TIME].max()
-    listening['days_since_last_listen'] = (
-        snapshot_date - last_listen
-    ).dt.days.clip(lower=0)
-
-    first_listen = grp[STD_EVENT_TIME].min()
-    span_days = (last_listen - first_listen).dt.days.clip(lower=0) + 1
-    listening['listening_frequency'] = listening['total_listens'] / span_days
-
-    # Max gap between consecutive listening sessions (days)
-    sorted_events = events.sort_values([STD_CUSTOMER_ID, STD_EVENT_TIME])
-    sorted_events['_prev_time'] = sorted_events.groupby(STD_CUSTOMER_ID)[
-        STD_EVENT_TIME
-    ].shift(1)
-    sorted_events['_gap_days'] = (
-        sorted_events[STD_EVENT_TIME] - sorted_events['_prev_time']
-    ).dt.days
-    gap_max = sorted_events.groupby(STD_CUSTOMER_ID)['_gap_days'].max()
-    listening['max_gap_between_sessions'] = gap_max.fillna(0.0)
-
-    div = listening['unique_artists'] / listening['total_listens'].clip(lower=1)
-    listening['artist_diversity_ratio'] = div
-
-    listening = listening.fillna(0.0)
-    return listening
-
-
-# ── Feature group: kkbox ─────────────────────────────────────────────
-
-def _engineer_kkbox(
-    df: pd.DataFrame, snapshot_date: pd.Timestamp,
-    customer_ids: Optional[List[str]] = None,
-) -> pd.DataFrame:
-    """KKBox subscription + listening activity features.
-
-    The KKBox adapter emits transaction events (event_type='purchase',
-    kkbox_* pricing columns) and listening events (event_type='listen',
-    kkbox_num_25/50/75/985/100, kkbox_num_unq, kkbox_total_secs).
-    """
-    if not _check_columns(df, [STD_CUSTOMER_ID, STD_EVENT_TIME], 'kkbox'):
-        return pd.DataFrame()
-
-    events = df.copy()
-    if customer_ids is not None:
-        events = events[events[STD_CUSTOMER_ID].isin(customer_ids)]
-    if events.empty:
-        return pd.DataFrame()
-
-    feat = pd.DataFrame(index=events[STD_CUSTOMER_ID].unique())
-    feat.index.name = STD_CUSTOMER_ID
-
-    if STD_EVENT_TYPE in events.columns:
-        trans = events[events[STD_EVENT_TYPE] == 'purchase']
-    else:
-        trans = events
-
-    # ── Subscription / transaction features ──────────────────────────
-    if not trans.empty:
-        tgrp = trans.groupby(STD_CUSTOMER_ID)
-        feat['total_transactions'] = trans.groupby(STD_CUSTOMER_ID).size()
-        if 'kkbox_actual_amount_paid' in events.columns:
-            feat['total_msno_paid'] = tgrp['kkbox_actual_amount_paid'].sum()
-        else:
-            feat['total_msno_paid'] = 0.0
-        if 'kkbox_is_auto_renew' in events.columns:
-            feat['is_auto_renew'] = tgrp['kkbox_is_auto_renew'].mean()
-        else:
-            feat['is_auto_renew'] = 0.0
-        if 'kkbox_plan_list_price' in events.columns:
-            feat['avg_plan_list_price'] = tgrp['kkbox_plan_list_price'].mean()
-        else:
-            feat['avg_plan_list_price'] = 0.0
-        if 'kkbox_plan_id' in events.columns:
-            feat['n_unique_plans'] = tgrp['kkbox_plan_id'].nunique()
-        if 'kkbox_payment_method_id' in events.columns:
-            feat['n_unique_payment_methods'] = tgrp[
-                'kkbox_payment_method_id'
-            ].nunique()
-        if 'kkbox_payment_plan_days' in events.columns:
-            feat['n_unique_payment_plan_days'] = tgrp[
-                'kkbox_payment_plan_days'
-            ].nunique()
-            feat['avg_payment_plan_days'] = tgrp[
-                'kkbox_payment_plan_days'
-            ].mean()
-
-    # ── Listening log features ───────────────────────────────────────
-    if STD_EVENT_TYPE in events.columns:
-        logs = events[events[STD_EVENT_TYPE] == 'listen'].copy()
-    else:
-        logs = pd.DataFrame()
-    if not logs.empty:
-        logs['_day'] = logs[STD_EVENT_TIME].dt.normalize()
-        feat['total_log_days'] = logs.groupby(STD_CUSTOMER_ID)['_day'].nunique()
-        feat['active_log_days'] = feat['total_log_days']
-
-        for col in ['kkbox_num_25', 'kkbox_num_50', 'kkbox_num_75',
-                    'kkbox_num_985', 'kkbox_num_100', 'kkbox_num_unq',
-                    'kkbox_total_secs']:
-            if col in logs.columns:
-                feat[col.replace('kkbox_', 'total_')] = logs.groupby(
-                    STD_CUSTOMER_ID
-                )[col].sum()
-
-        if 'kkbox_total_secs' in logs.columns:
-            feat['total_seconds'] = logs.groupby(STD_CUSTOMER_ID)[
-                'kkbox_total_secs'
-            ].sum()
-
-        num_cols = [c for c in ['kkbox_num_25', 'kkbox_num_50', 'kkbox_num_75',
-                                'kkbox_num_985', 'kkbox_num_100', 'kkbox_num_unq']
-                    if c in logs.columns]
-        if num_cols:
-            feat['avg_num_per_day'] = (
-                logs.groupby(STD_CUSTOMER_ID)[num_cols].sum().sum(axis=1)
-                / feat['active_log_days'].clip(lower=1)
-            )
-        if 'kkbox_total_secs' in logs.columns:
-            feat['avg_seconds_per_day'] = (
-                feat['total_seconds'] / feat['active_log_days'].clip(lower=1)
-            )
-
-        last_log = logs.groupby(STD_CUSTOMER_ID)[STD_EVENT_TIME].max()
-        feat['days_since_last_listen'] = (
-            snapshot_date - last_log
-        ).dt.days.clip(lower=0)
-
-    feat = feat.fillna(0.0)
-    return feat
 
 
 # ── Registry of feature group builders ───────────────────────────────
@@ -597,9 +391,6 @@ FEATURE_GROUP_BUILDERS: Dict[str, Callable] = {
     'payment': _engineer_payment,
     'engagement': _engineer_engagement,
     'cadence': _engineer_cadence,
-    'static': _engineer_static,
-    'listening': _engineer_listening,
-    'kkbox': _engineer_kkbox,
 }
 
 
@@ -610,7 +401,6 @@ def engineer_features(
     snapshot_date: pd.Timestamp,
     customer_ids: Optional[List[str]] = None,
     available_groups: Optional[List[str]] = None,
-    filter_by_snapshot: bool = True,
 ) -> pd.DataFrame:
     """Build a customer × feature matrix using only events < snapshot_date.
 
@@ -624,22 +414,12 @@ def engineer_features(
         If provided, only features for these customers are computed.
     available_groups : list of str, optional
         Which feature groups to build.  If None, all groups are attempted.
-    filter_by_snapshot : bool, default True
-        If False, skip the ``event_time < snapshot`` filter.  Used by
-        datasets whose ``event_time`` is synthetic (no genuine temporal
-        dimension) but whose features are per-customer static attributes
-        (e.g. Telco).  Setting this False never widens the temporal window
-        for datasets with real timestamps — callers must only disable it
-        when ``adapter.has_temporal_data`` is False.
 
     Returns
     -------
     pd.DataFrame with customers as index, feature names as columns.
     """
-    if filter_by_snapshot:
-        hist = df[df[STD_EVENT_TIME] < snapshot_date].copy()
-    else:
-        hist = df.copy()
+    hist = df[df[STD_EVENT_TIME] < snapshot_date].copy()
     n_hist = len(hist)
     logger.info(
         "Engineering features up to %s (historical rows: %d, groups: %s)",
@@ -647,9 +427,8 @@ def engineer_features(
         available_groups or 'all',
     )
 
-    if filter_by_snapshot:
-        assert (hist[STD_EVENT_TIME] < snapshot_date).all(), \
-            "Future timestamps in historical slice!"
+    assert (hist[STD_EVENT_TIME] < snapshot_date).all(), \
+        "Future timestamps in historical slice!"
 
     if customer_ids is not None:
         customer_set = set(customer_ids)

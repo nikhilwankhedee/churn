@@ -78,8 +78,6 @@ def feature_distribution_tests(
         })
 
     res_df = pd.DataFrame(results)
-    if res_df.empty:
-        return res_df
     if len(res_df) > 1:
         try:
             reject = _fdc(res_df['p_value'].values)

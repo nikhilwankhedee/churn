@@ -49,20 +49,20 @@ def _save_and_close(fig, filepath, tight=True):
 
 # ── ROC curves ──────────────────────────────────────────────────────
 def plot_roc_curves(prob_dict: Dict[str, np.ndarray],
-                    y_test: pd.Series) -> None:
+                    y_test: pd.Series, suffix: str = '') -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     for name, probs in prob_dict.items():
         RocCurveDisplay.from_predictions(y_test, probs, name=name, ax=ax)
     ax.plot([0, 1], [0, 1], 'k--', alpha=0.4)
     ax.set_title('ROC Curves')
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
-                                      'roc_curves.png'))
+                                      f'roc_curves{suffix}.png'))
     logger.info("ROC curves saved")
 
 
 # ── PR curves ───────────────────────────────────────────────────────
 def plot_pr_curves(pr_data: Dict[str, Tuple[np.ndarray, np.ndarray, float]],
-                   y_test: pd.Series) -> None:
+                   y_test: pd.Series, suffix: str = '') -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     for name, (prec, rec, ap) in pr_data.items():
         ax.step(rec, prec, where='post', label=f'{name} (AP={ap:.3f})')
@@ -71,19 +71,19 @@ def plot_pr_curves(pr_data: Dict[str, Tuple[np.ndarray, np.ndarray, float]],
     ax.set_title('Precision-Recall Curves')
     ax.legend(loc='best')
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
-                                      'pr_curves.png'))
+                                      f'pr_curves{suffix}.png'))
     logger.info("PR curves saved")
 
 
 # ── Confusion matrices ──────────────────────────────────────────────
-def plot_confusion_matrices(cms: Dict[str, np.ndarray]) -> None:
+def plot_confusion_matrices(cms: Dict[str, np.ndarray], suffix: str = '') -> None:
     for name, cm in cms.items():
         fig, ax = plt.subplots(figsize=(5, 4))
         ConfusionMatrixDisplay(cm, display_labels=['Retained', 'Churned']).plot(
             ax=ax, cmap='Blues', values_format='d')
         ax.set_title(f'Confusion Matrix — {name}')
         _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
-                                          f'confusion_{name}.png'))
+                                          f'confusion_{name}{suffix}.png'))
     logger.info("Confusion matrices saved")
 
 
@@ -102,7 +102,7 @@ def plot_feature_importance(imp_df: pd.DataFrame, title: str = '',
 
 
 # ── Correlation heatmap ─────────────────────────────────────────────
-def plot_correlation_heatmap(features: pd.DataFrame) -> None:
+def plot_correlation_heatmap(features: pd.DataFrame, suffix: str = '') -> None:
     corr = features.select_dtypes(include=[np.number]).corr()
     mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
     fig, ax = plt.subplots(figsize=(14, 12))
@@ -110,12 +110,12 @@ def plot_correlation_heatmap(features: pd.DataFrame) -> None:
                 square=True, linewidths=0.5, ax=ax)
     ax.set_title('Feature Correlation Matrix')
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'correlation_analysis',
-                                      'correlation_heatmap.png'))
+                                      f'correlation_heatmap{suffix}.png'))
     logger.info("Correlation heatmap saved")
 
 
 # ── Segmentation scatter ────────────────────────────────────────────
-def plot_segmentation(seg_df: pd.DataFrame) -> None:
+def plot_segmentation(seg_df: pd.DataFrame, suffix: str = '') -> None:
     if 'pca_x' not in seg_df or 'pca_y' not in seg_df:
         logger.warning("PCA columns missing — skipping segmentation plot")
         return
@@ -128,12 +128,12 @@ def plot_segmentation(seg_df: pd.DataFrame) -> None:
     ax.set_title('Customer Segments (PCA Projection)')
     ax.legend()
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'segmentation',
-                                      'segments_scatter.png'))
+                                      f'segments_scatter{suffix}.png'))
     logger.info("Segmentation plot saved")
 
 
 # ── Churn distribution bar ──────────────────────────────────────────
-def plot_churn_distribution(labels: pd.Series) -> None:
+def plot_churn_distribution(labels: pd.Series, suffix: str = '') -> None:
     counts = labels.value_counts(normalize=True) * 100
     fig, ax = plt.subplots(figsize=(6, 4))
     bars = ax.bar(['Retained', 'Churned'], counts.values,
@@ -144,12 +144,13 @@ def plot_churn_distribution(labels: pd.Series) -> None:
     ax.set_ylabel('Percentage (%)')
     ax.set_title('Churn Distribution')
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'churn_analysis',
-                                      'churn_distribution.png'))
+                                      f'churn_distribution{suffix}.png'))
     logger.info("Churn distribution saved")
 
 
 # ── Threshold analysis ──────────────────────────────────────────────
-def plot_threshold_analysis(thresh_df: pd.DataFrame, model_name: str) -> None:
+def plot_threshold_analysis(thresh_df: pd.DataFrame, model_name: str,
+                            suffix: str = '') -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(thresh_df['threshold'], thresh_df['precision'], label='Precision')
     ax.plot(thresh_df['threshold'], thresh_df['recall'], label='Recall')
@@ -159,13 +160,14 @@ def plot_threshold_analysis(thresh_df: pd.DataFrame, model_name: str) -> None:
     ax.set_title(f'{model_name} — Threshold Analysis')
     ax.legend(loc='best')
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
-                                      f'{model_name}_threshold.png'))
+                                      f'{model_name}_threshold{suffix}.png'))
     logger.info("Threshold analysis saved for %s", model_name)
 
 
 # ── Ablation results ────────────────────────────────────────────────
 def plot_ablation_results(ablation_df: pd.DataFrame,
-                          metric: str = 'mean_roc_auc') -> None:
+                          metric: str = 'mean_roc_auc',
+                          suffix: str = '') -> None:
     fig, ax = plt.subplots(figsize=(10, 6))
     for model in ablation_df['model'].unique():
         sub = ablation_df[ablation_df['model'] == model]
@@ -176,13 +178,14 @@ def plot_ablation_results(ablation_df: pd.DataFrame,
     ax.legend(loc='best')
     fig.tight_layout()
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
-                                      'ablation_results.png'))
+                                      f'ablation_results{suffix}.png'))
     logger.info("Ablation plot saved")
 
 
 # ── Behavioural boxplots ────────────────────────────────────────────
 def plot_behavioral_insights(features: pd.DataFrame,
-                              churn_labels: pd.Series) -> None:
+                              churn_labels: pd.Series,
+                              suffix: str = '') -> None:
     key_feats = ['days_since_last_purchase', 'total_orders',
                  'total_spent', 'avg_review_score']
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
@@ -198,12 +201,12 @@ def plot_behavioral_insights(features: pd.DataFrame,
         ax.set_title(feat.replace('_', ' ').title())
     fig.suptitle('Behavioural Comparison by Churn Status', fontsize=FONT_SIZE + 2)
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'behavioral_insights',
-                                      'behavior_boxplots.png'))
+                                      f'behavior_boxplots{suffix}.png'))
     logger.info("Behavioural insights saved")
 
 
 # ── Delivery-time histogram (if data available) ─────────────────────
-def plot_delivery_delay_distribution(features: pd.DataFrame) -> None:
+def plot_delivery_delay_distribution(features: pd.DataFrame, suffix: str = '') -> None:
     if 'avg_delivery_delay_days' not in features:
         return
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -211,5 +214,5 @@ def plot_delivery_delay_distribution(features: pd.DataFrame) -> None:
                  kde=True, ax=ax)
     ax.set_title('Distribution of Avg Delivery Delay')
     _save_and_close(fig, os.path.join(FIGURES_DIR, 'dataset_analysis',
-                                      'delivery_delay_dist.png'))
+                                      f'delivery_delay_dist{suffix}.png'))
     logger.info("Delivery delay histogram saved")

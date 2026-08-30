@@ -128,16 +128,13 @@ def validate_schema(
 
     # ── Customer ID validity ─────────────────────────────────────────
     if 'customer_id' in df.columns:
-        cid = df['customer_id']
-        if isinstance(cid, pd.DataFrame):
-            cid = cid.iloc[:, 0]
-        n_null_cid = int(cid.isna().sum())
+        n_null_cid = df['customer_id'].isna().sum()
         if n_null_cid > 0:
             e = f"customer_id has {n_null_cid} null values — data corruption"
             report['errors'].append(e)
             logger.error("Schema | %s", e)
 
-        n_unique = int(cid.nunique())
+        n_unique = df['customer_id'].nunique()
         logger.validation("Schema | [OK] %d unique customer IDs", n_unique)
         report['n_unique_customers'] = n_unique
 

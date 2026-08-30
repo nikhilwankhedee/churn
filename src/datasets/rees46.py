@@ -11,24 +11,19 @@ to Olist but with richer engagement signals.
 Data source: https://www.kaggle.com/datasets/rees46/rees46-marketplace
 """
 import os
-from typing import Any, Dict, List, Optional
-
-import numpy as np
 import pandas as pd
+import numpy as np
+from typing import Optional, List, Dict, Any
 
 from src.datasets.base import BaseDatasetAdapter
+from src.config import ON_KAGGLE, REES46_FILE
 from src.utils import get_logger
 
 logger = get_logger(__name__)
 
 EVENTS_FILE = "rees46_events.csv"
-EVENTS_FILE_KAGGLE = "events.csv"
 USERS_FILE = "rees46_users.csv"
-USERS_FILE_KAGGLE = "users.csv"
 ITEMS_FILE = "rees46_items.csv"
-ITEMS_FILE_KAGGLE = "items.csv"
-CUSTOMER_MODEL_FILE = "rees46_customer_model.csv"
-CUSTOMER_MODEL_FILE_KAGGLE = "customer_model.csv"
 
 
 class REES46Adapter(BaseDatasetAdapter):
@@ -42,22 +37,7 @@ class REES46Adapter(BaseDatasetAdapter):
 
     @property
     def churn_window_days(self) -> Optional[int]:
-        return 180
-
-    @property
-    def required_files(self) -> list:
-        return [EVENTS_FILE]
-
-    @property
-    def alternate_filenames(self) -> Dict[str, List[str]]:
-        """Kaggle ships these files under different names than the local
-        build.  The resolver treats a required file as present if any
-        alternate exists (e.g. ``events.csv`` for ``rees46_events.csv``)."""
-        return {
-            EVENTS_FILE: [EVENTS_FILE_KAGGLE],
-            USERS_FILE: [USERS_FILE_KAGGLE],
-            ITEMS_FILE: [ITEMS_FILE_KAGGLE],
-        }
+        return 90
 
     # ── Data loading ─────────────────────────────────────────────────
 
@@ -75,73 +55,25 @@ class REES46Adapter(BaseDatasetAdapter):
             logger.error("Failed to load %s: %s", filepath, exc)
             return None
 
-    def _resolve_file(self, *candidates: str) -> Optional[str]:
-        """Return path of first existing file, or None."""
-        for name in candidates:
-            path = os.path.join(self.data_dir, name)
-            if os.path.isfile(path):
-                return path
-        return None
-
-    def _load_customer_model_format(self) -> Optional[pd.DataFrame]:
-        """Load from rees46_customer_model.csv (single-file format)."""
-        cm_path = self._resolve_file(CUSTOMER_MODEL_FILE, CUSTOMER_MODEL_FILE_KAGGLE)
-        if cm_path is None:
-            return None
-        try:
-            df = pd.read_csv(cm_path, nrows=5)
-            logger.info("Customer model columns: %s", list(df.columns))
-            # This format has pre-computed user-level features
-            # We'll use it directly as the events source
-            df = pd.read_csv(cm_path)
-            return df
-        except Exception as exc:
-            logger.error("Failed to load customer model: %s", exc)
-            return None
-
-    def _load_customer_model_format(self) -> Optional[pd.DataFrame]:
-        """Deprecated: customer_model has no per-event timestamps.
-
-        Retained only to document why it must not be used as an events
-        substitute for temporal churn analysis.  Raises FileNotFoundError
-        instead of silently returning non-temporal data.
-        """
-        raise FileNotFoundError(
-            f"customer_model format cannot be used for temporal churn: "
-            f"it lacks per-event timestamps.  Provide the full events file "
-            f"({EVENTS_FILE}/{EVENTS_FILE_KAGGLE}) instead."
+    def load_raw_data(self) -> pd.DataFrame:
+        events_path = (
+            REES46_FILE if ON_KAGGLE else os.path.join(self.data_dir, EVENTS_FILE)
+        )
+        events = self._safe_read_csv(
+            events_path, "events",
+            dtype={"user_id": str, "item_id": str, "event_type": str},
+        )
+        users = self._safe_read_csv(
+            os.path.join(self.data_dir, USERS_FILE), "users",
+        )
+        items = self._safe_read_csv(
+            os.path.join(self.data_dir, ITEMS_FILE), "items",
         )
 
-    def load_raw_data(self) -> pd.DataFrame:
-        events_path = self._resolve_file(EVENTS_FILE, EVENTS_FILE_KAGGLE)
-
-        if events_path is not None:
-            events = self._safe_read_csv(
-                events_path, "events",
-                dtype={"user_id": str, "item_id": str, "event_type": str},
-            )
-        else:
-            events = None
-
         if events is None:
-            # Refuse to fall back to the user-level customer_model file: it has
-            # no per-event timestamps, so it cannot support temporal churn.
-            # Requiring it to stand in for events would silently produce
-            # non-temporal (and unusable) data.
             raise FileNotFoundError(
-                f"No events file found in {self.data_dir}. "
-                f"Expected one of {EVENTS_FILE}/{EVENTS_FILE_KAGGLE} "
-                f"(the full 'rees46/rees46-marketplace' events.csv). "
-                f"A user-level {CUSTOMER_MODEL_FILE}/{CUSTOMER_MODEL_FILE_KAGGLE} "
-                f"file alone is insufficient because it lacks per-event "
-                f"timestamps."
+                f"Required file {EVENTS_FILE} not found in {self.data_dir}"
             )
-
-        users_path = self._resolve_file(USERS_FILE, USERS_FILE_KAGGLE)
-        items_path = self._resolve_file(ITEMS_FILE, ITEMS_FILE_KAGGLE)
-
-        users = self._safe_read_csv(users_path, "users") if users_path else None
-        items = self._safe_read_csv(items_path, "items") if items_path else None
 
         events = events.copy()
 
@@ -217,14 +149,6 @@ class REES46Adapter(BaseDatasetAdapter):
         if "session_id" not in df.columns:
             df["session_id"] = "unknown"
 
-        if "engagement_signal" not in df.columns:
-            if "event_type" in df.columns:
-                df["engagement_signal"] = df["event_type"].map({
-                    "purchase": 3, "cart_add": 2, "view": 1,
-                }).fillna(0).astype(float)
-            else:
-                df["engagement_signal"] = 0.0
-
         logger.info(
             "Standardised schema — columns: %s", list(df.columns)
         )
@@ -251,10 +175,10 @@ class REES46Adapter(BaseDatasetAdapter):
             "source_url": "https://www.kaggle.com/datasets/rees46/rees46-marketplace",
             "n_customers_approx": 500_000,
             "n_events_approx": 5_000_000,
-            "churn_window_days": 180,
+            "churn_window_days": 90,
             "churn_justification": (
-                "180 days — matches Olist for cross-dataset comparability; "
-                "REES46 is a similar marketplace with sparse repurchase."
+                "90 days — configured methodology for the REES46 customer "
+                "modeling dataset."
             ),
             "uses_native_churn_label": False,
             "available_feature_groups": self.available_feature_groups,
