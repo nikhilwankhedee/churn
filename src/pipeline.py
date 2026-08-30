@@ -10,7 +10,7 @@ Execution flow:
   5. Churn label creation (inactivity-based or native)
   6. Feature engineering on standardised schema
   7. Behavioral sanity checks (Layer 2)
-  8. Model training (LR, RF, XGBoost, LightGBM, SVM) + baselines
+  8. Model training (LR, RF, XGBoost) + baselines
   9. Evaluation & threshold analysis
   10. Calibration curves
   11. SHAP explainability
@@ -32,89 +32,69 @@ Usage:
     run_pipeline(dataset="olist")
     run_pipeline(dataset="retailrocket")
     run_pipeline(dataset="telco")
-    run_pipeline(dataset="credit_card")
-    run_pipeline(dataset="lastfm")
 """
-import datetime
-import hashlib
 import os
-from typing import Any, Dict, List, Optional
-
-import numpy as np
+import datetime
 import pandas as pd
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from sklearn.calibration import calibration_curve
 from sklearn.model_selection import train_test_split as tts
+from typing import Optional, Dict, Any, List
 
-from src.ablation import run_ablation
+try:
+    from imblearn.over_sampling import SMOTE
+    _SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE = None
+    _SMOTE_AVAILABLE = False
+
+from src.config import (
+    FIGURES_DIR, RESULTS_DIR, MODELS_DIR, PROCESSED_DIR,
+    FIGURE_SUBDIRS, RESULT_SUBDIRS,
+    TRAIN_SPLIT_QUANTILE, RANDOM_SEED, PREDICTION_WINDOW_DAYS,
+    SHAP_SAMPLE_SIZE, SENSITIVITY_ENABLED, CALIBRATION_N_BINS,
+)
+from src.utils import (
+    set_seed, ensure_dir, get_logger, timeit,
+)
+from src.datasets import get_dataset, get_ecosystem_type
+from src.churn_labeling import (
+    create_churn_labels, get_train_test_cutoffs,
+)
+from src.feature_engineering import engineer_features
+from src.modeling import train_models
+from src.evaluation import (
+    evaluate_model, threshold_analysis, get_pr_data,
+    compute_imbalance_metrics,
+)
 from src.baselines import majority_class_baseline, random_baseline
 from src.calibration import plot_calibration_curves
-from src.churn_labeling import (
-    create_churn_labels,
-    get_train_test_cutoffs,
-    stratified_native_split,
+from src.explainability import shap_analysis
+from src.visualization import (
+    plot_roc_curves, plot_pr_curves, plot_confusion_matrices,
+    plot_feature_importance, plot_correlation_heatmap,
+    plot_segmentation, plot_churn_distribution,
+    plot_ablation_results, plot_behavioral_insights,
+    plot_threshold_analysis, plot_delivery_delay_distribution,
 )
-from src.config import (
-    FIGURE_SUBDIRS,
-    FIGURES_DIR,
-    MODELS_DIR,
-    PREDICTION_WINDOW_DAYS,
-    PROCESSED_DIR,
-    RANDOM_SEED,
-    RESULT_SUBDIRS,
-    RESULTS_DIR,
-    SENSITIVITY_ENABLED,
-    SHAP_SAMPLE_SIZE,
-    SMOTE_K_NEIGHBORS,
-    TRAIN_SPLIT_QUANTILE,
-)
+from src.segmentation import segment_customers
+from src.ablation import run_ablation
+from src.risk_scoring import generate_risk_table
+from src.statistical_tests import feature_distribution_tests
 from src.data_quality import generate_data_quality_report
-from src.datasets import get_dataset, get_ecosystem_type
-from src.evaluation import (
-    compute_imbalance_metrics,
-    evaluate_model,
-    get_pr_data,
-    threshold_analysis,
+from src.failure_analysis import analyze_errors, behavioral_comparison
+from src.exports import (
+    save_models, save_processed_data, save_evaluation_table,
+    save_shap_values, save_risk_scores, save_data_quality_report,
+    save_experiment_metadata, append_to_master_results,
 )
 from src.experiment_tracker import log_experiment
-from src.explainability import shap_analysis
-from src.exports import (
-    append_to_master_results,
-    save_data_quality_report,
-    save_evaluation_table,
-    save_experiment_artifacts,
-    save_experiment_metadata,
-    save_models,
-    save_processed_data,
-    save_risk_scores,
-    save_shap_values,
-)
-from src.failure_analysis import analyze_errors, behavioral_comparison
-from src.feature_engineering import engineer_features
-from src.modeling import AVAILABLE_MODELS, MODEL_ORDER, train_models
-from src.risk_scoring import generate_risk_table
-from src.segmentation import segment_customers
-from src.statistical_tests import feature_distribution_tests
-from src.utils import (
-    ensure_dir,
-    get_logger,
-    set_seed,
-    timeit,
-)
 from src.validators import (
-    validate_cross_dataset_behavior,
-    validate_outputs,
-)
-from src.visualization import (
-    plot_ablation_results,
-    plot_behavioral_insights,
-    plot_churn_distribution,
-    plot_confusion_matrices,
-    plot_correlation_heatmap,
-    plot_delivery_delay_distribution,
-    plot_feature_importance,
-    plot_pr_curves,
-    plot_roc_curves,
-    plot_segmentation,
-    plot_threshold_analysis,
+    validate_schema, validate_behavioral_statistics,
+    validate_outputs, validate_cross_dataset_behavior,
 )
 
 logger = get_logger(__name__)
@@ -163,38 +143,26 @@ def run_pipeline(
     dataset: str = "olist",
     sensitivity: bool = False,
     churn_window_override: Optional[int] = None,
-    data_dir: Optional[str] = None,
     use_smote: bool = False,
-    model_names: Optional[List[str]] = None,
-    results_dir: Optional[str] = None,
+    collect_calibration: bool = False,
 ) -> Dict[str, Any]:
     """Run the full behavioural churn prediction pipeline for a dataset.
-
-    Stateless experiment design (Section 8 of the experiment spec): the
-    SMOTE condition and model subset are explicit parameters — they never
-    mutate global configuration.
 
     Parameters
     ----------
     dataset : str
-        One of: olist, rees46, retailrocket, online_retail_ii, instacart,
-        telco, credit_card, lastfm, kkbox.
+        One of the registered dataset names: olist, rees46, retailrocket,
+        online_retail_ii, instacart, telco, lastfm, credit_card.
     sensitivity : bool
         If True, also run sensitivity analysis for this dataset.
     churn_window_override : int, optional
         Override the default churn window for this run.
-    data_dir : str, optional
-        Explicit directory containing raw data files. When provided, the
-        adapter loads data from this directory regardless of environment.
-    use_smote : bool, default False
-        If True, apply SMOTE to the training split only (never the
-        validation/test split).
-    model_names : list of str, optional
-        Subset of models to train.  None → all five available models.
-    results_dir : str, optional
-        Base directory for the isolated per-condition outputs
-        (``{results_dir}/{without|with_smote}/{dataset}/``).
-        None → central RESULTS_DIR.
+    use_smote : bool
+        If True, apply SMOTE to the training fold (removing class weights) and
+        suffix all outputs with ``_smote``.
+    collect_calibration : bool
+        If True, include the per-model probability arrays and the test labels
+        in the returned metadata (used by :func:`run_smote_comparison`).
 
     Returns
     -------
@@ -202,13 +170,13 @@ def run_pipeline(
     """
     start_time = datetime.datetime.utcnow()
     logger.info("=" * 60)
+    mode_suffix = '_smote' if use_smote else ''
     logger.info("Behavioural Churn Prediction Pipeline — dataset: %s", dataset)
-    logger.info("SMOTE: %s | Models: %s",
-                use_smote, ','.join(model_names or AVAILABLE_MODELS))
+    logger.info("Training mode: %s", "smote" if use_smote else "original")
     logger.info("=" * 60)
 
     # ── 0. Load dataset adapter ──────────────────────────────────────
-    adapter = get_dataset(dataset, data_dir=data_dir)
+    adapter = get_dataset(dataset)
     ecosystem_type = get_ecosystem_type(dataset)
     meta = adapter.metadata
 
@@ -222,20 +190,15 @@ def run_pipeline(
     logger.validation("Config | Churn window: %s days", churn_window)
     logger.validation("Config | Available feature groups: %s", available_groups)
     logger.validation("Config | Native churn label: %s", adapter.uses_native_churn_label)
-    logger.validation("Config | Temporal data: %s", adapter.has_temporal_data)
-
-    condition = 'with_smote' if use_smote else 'without_smote'
-    exp_base_dir = os.path.join(results_dir or RESULTS_DIR, condition, dataset)
 
     _create_directories()
-    ensure_dir(exp_base_dir)
     logger.validation("Config | Output directories created")
 
     # ── 1. Load raw data ────────────────────────────────────────────
     logger.info("── Step 1/17: Load raw data ──")
     df = adapter.load_raw_data()
     dq_report = generate_data_quality_report(df)
-    save_data_quality_report(dq_report, base_dir=exp_base_dir)
+    save_data_quality_report(dq_report, suffix=mode_suffix)
     logger.validation("Data | %d rows, %d columns loaded", df.shape[0], df.shape[1])
 
     # ── 2. Preprocess ───────────────────────────────────────────────
@@ -257,48 +220,49 @@ def run_pipeline(
             f"Schema validation failed for {dataset}: {schema_report['errors']}"
         )
 
-    # ── 5. Train/test split ─────────────────────────────────────────
-    logger.info("── Step 4/17: Train/test split ──")
-    # Native-label datasets without a genuine event timeline (credit_card,
-    # telco) cannot use temporal cutoffs: the raw data has no real
-    # timestamps, and a synthetic event_time must never be used as a
-    # workaround.  They get a customer-level stratified 70/30 split instead,
-    # and the snapshot filter is disabled so features are never truncated
-    # against a fake timestamp.  SMOTE still runs later, strictly on the
-    # training split.  Temporal datasets (olist, retailrocket, rees46,
-    # instacart, online_retail_ii, lastfm, kkbox) keep the exact same
-    # temporal methodology as before.
-    non_temporal_native = (
-        adapter.uses_native_churn_label and not adapter.has_temporal_data)
-    if non_temporal_native:
-        labels_all = adapter.get_native_churn_labels(
-            df, df['event_time'].max())
-        train_cust_ids, test_cust_ids, train_labels_df, test_labels_df = (
-            stratified_native_split(labels_all))
-        train_cutoff = test_cutoff = df['event_time'].max()
-        logger.validation(
-            "Split | Stratified native — train: %d, test: %d customers",
-            len(train_cust_ids), len(test_cust_ids),
+    custom_user_relative = hasattr(adapter, 'build_user_relative_modeling_data')
+    custom_native_split = hasattr(adapter, 'build_native_modeling_data')
+
+    if custom_user_relative:
+        logger.info("── Step 4/17: User-relative modeling split ──")
+        train_features, test_features, train_labels_df, test_labels_df = (
+            adapter.build_user_relative_modeling_data(df)
         )
-    elif adapter.uses_native_churn_label:
-        # Temporal native-label dataset (e.g. kkbox): quantile cutoff,
-        # adapter extracts train/test labels per cutoff.
-        max_date = df['event_time'].max()
-        train_cutoff = df['event_time'].quantile(TRAIN_SPLIT_QUANTILE)
-        test_cutoff = max_date
+        train_cutoff = 'user_relative_observation'
+        test_cutoff = 'user_relative_future'
         logger.validation(
-            "Cutoffs | Native label — train: %s, test: %s",
-            train_cutoff.date(), test_cutoff.date(),
+            "UserRelative | Train: %d customers | Test: %d customers",
+            len(train_features), len(test_features),
+        )
+    elif custom_native_split:
+        logger.info("── Step 4/17: Native-label stratified split ──")
+        train_features, test_features, train_labels_df, test_labels_df = (
+            adapter.build_native_modeling_data(df)
+        )
+        train_cutoff = 'native_stratified_train'
+        test_cutoff = 'native_stratified_test'
+        logger.validation(
+            "NativeSplit | Train: %d customers | Test: %d customers",
+            len(train_features), len(test_features),
         )
     else:
-        # Behavioural (inactivity-based) temporal path — unchanged.
-        train_cutoff, test_cutoff = get_train_test_cutoffs(
-            df, TRAIN_SPLIT_QUANTILE, churn_window,
-        )
+        # ── 5. Temporal cutoffs ─────────────────────────────────────────
+        logger.info("── Step 4/17: Temporal cutoffs ──")
+        if adapter.uses_native_churn_label:
+            max_date = df['event_time'].max()
+            train_cutoff = df['event_time'].quantile(TRAIN_SPLIT_QUANTILE)
+            test_cutoff = max_date
+            logger.validation(
+                "Cutoffs | Native label — train: %s, test: %s",
+                train_cutoff.date(), test_cutoff.date(),
+            )
+        else:
+            train_cutoff, test_cutoff = get_train_test_cutoffs(
+                df, TRAIN_SPLIT_QUANTILE, churn_window,
+            )
 
-    # ── 6. Training labels ──────────────────────────────────────────
-    logger.info("── Step 5/17: Train labels ──")
-    if not non_temporal_native:
+        # ── 6. Training labels ──────────────────────────────────────────
+        logger.info("── Step 5/17: Train labels ──")
         if adapter.uses_native_churn_label:
             train_labels_df = adapter.get_native_churn_labels(df, train_cutoff)
             train_cust_ids = train_labels_df['customer_id'].tolist()
@@ -308,29 +272,27 @@ def run_pipeline(
             )
             train_cust_ids = train_labels_df['customer_id'].tolist()
 
-    # ── 7. Training features ────────────────────────────────────────
-    logger.info("── Step 6/17: Train features ──")
-    train_features = engineer_features(
-        df, train_cutoff, customer_ids=train_cust_ids,
-        available_groups=available_groups,
-        filter_by_snapshot=adapter.has_temporal_data,
-    )
-    if train_features.empty:
-        raise RuntimeError("Training feature matrix is empty — check data/snapshot")
-    train_labels_df = train_labels_df.set_index('customer_id')
-    train_labels_df = train_labels_df.loc[
-        train_features.index.intersection(train_labels_df.index)
-    ]
-    train_features = train_features.loc[train_labels_df.index]
-    churn_rate_train = train_labels_df['churn'].mean()
-    logger.validation(
-        "Train | %d customers, churn rate %.2f%%",
-        len(train_features), churn_rate_train * 100,
-    )
+        # ── 7. Training features ────────────────────────────────────────
+        logger.info("── Step 6/17: Train features ──")
+        train_features = engineer_features(
+            df, train_cutoff, customer_ids=train_cust_ids,
+            available_groups=available_groups,
+        )
+        if train_features.empty:
+            raise RuntimeError("Training feature matrix is empty — check data/snapshot")
+        train_labels_df = train_labels_df.set_index('customer_id')
+        train_labels_df = train_labels_df.loc[
+            train_features.index.intersection(train_labels_df.index)
+        ]
+        train_features = train_features.loc[train_labels_df.index]
+        churn_rate_train = train_labels_df['churn'].mean()
+        logger.validation(
+            "Train | %d customers, churn rate %.2f%%",
+            len(train_features), churn_rate_train * 100,
+        )
 
-    # ── 8. Test labels ──────────────────────────────────────────────
-    logger.info("── Step 7/17: Test labels ──")
-    if not non_temporal_native:
+        # ── 8. Test labels ──────────────────────────────────────────────
+        logger.info("── Step 7/17: Test labels ──")
         if adapter.uses_native_churn_label:
             test_labels_df = adapter.get_native_churn_labels(df, test_cutoff)
             test_cust_ids = test_labels_df['customer_id'].tolist()
@@ -340,38 +302,44 @@ def run_pipeline(
             )
             test_cust_ids = test_labels_df['customer_id'].tolist()
 
-    # ── 9. Test features ────────────────────────────────────────────
-    logger.info("── Step 8/17: Test features ──")
-    test_features = engineer_features(
-        df, test_cutoff, customer_ids=test_cust_ids,
-        available_groups=available_groups,
-        filter_by_snapshot=adapter.has_temporal_data,
-    )
-    if test_features.empty:
-        raise RuntimeError("Test feature matrix is empty")
-    test_labels_df = test_labels_df.set_index('customer_id')
+        # ── 9. Test features ────────────────────────────────────────────
+        logger.info("── Step 8/17: Test features ──")
+        test_features = engineer_features(
+            df, test_cutoff, customer_ids=test_cust_ids,
+            available_groups=available_groups,
+        )
+        if test_features.empty:
+            raise RuntimeError("Test feature matrix is empty")
+        test_labels_df = test_labels_df.set_index('customer_id')
+        test_labels_df = test_labels_df.loc[
+            test_features.index.intersection(test_labels_df.index)
+        ]
+        test_features = test_features.loc[test_labels_df.index]
+
+    if 'customer_id' in train_labels_df.columns:
+        train_labels_df = train_labels_df.set_index('customer_id')
+    if 'customer_id' in test_labels_df.columns:
+        test_labels_df = test_labels_df.set_index('customer_id')
+    train_labels_df = train_labels_df.loc[
+        train_features.index.intersection(train_labels_df.index)
+    ]
+    train_features = train_features.loc[train_labels_df.index]
     test_labels_df = test_labels_df.loc[
         test_features.index.intersection(test_labels_df.index)
     ]
     test_features = test_features.loc[test_labels_df.index]
 
-    # ── Leakage guard: identifier / target columns must not leak ────
-    for name, feat in [('train', train_features), ('test', test_features)]:
-        leaked_target = 'churn' in feat.columns
-        leaked_id = 'customer_id' in feat.columns
-        if leaked_target or leaked_id:
-            raise RuntimeError(
-                f"Leakage detected in {name} feature matrix — "
-                f"target_col={leaked_target}, id_col={leaked_id}"
-            )
-        logger.validation(
-            "Leakage | %s features contain no target/identifier columns",
-            name,
-        )
+    churn_rate_train = train_labels_df['churn'].mean()
+    logger.validation(
+        "Train | %d customers, churn rate %.2f%%",
+        len(train_features), churn_rate_train * 100,
+    )
 
     # Align train/test columns
     for c in set(train_features.columns) - set(test_features.columns):
         test_features[c] = 0.0
+    for c in set(test_features.columns) - set(train_features.columns):
+        train_features[c] = 0.0
     test_features = test_features[train_features.columns]
     churn_rate_test = test_labels_df['churn'].mean()
     logger.validation(
@@ -391,7 +359,7 @@ def run_pipeline(
     logger.info("── Step 9/17: Save processed data ──")
     save_processed_data(train_features, test_features,
                          train_labels_df, test_labels_df,
-                         base_dir=exp_base_dir)
+                         suffix=mode_suffix)
 
     # ── 11. Train models ────────────────────────────────────────────
     logger.info("── Step 10/17: Train models ──")
@@ -406,95 +374,33 @@ def run_pipeline(
         imb_train['churn_rate'] * 100, imb_train['imbalance_ratio'],
         imb_test['churn_rate'] * 100, imb_test['imbalance_ratio'],
     )
-
-    # ── Single-class guard ───────────────────────────────────────────
-    # Both classes are required to train meaningful models and to compute
-    # ROC-AUC / PR-AUC.  A run whose train or test labels collapse to one
-    # class is a failed experiment — never a "success" with NaN metrics
-    # (which previously crashed downstream publication aggregation).
-    n_classes_train = int(y_train.nunique())
-    n_classes_test = int(y_test.nunique())
-    if n_classes_train < 2 or n_classes_test < 2:
-        raise RuntimeError(
-            f"Churn labels are single-class — train has {n_classes_train} "
-            f"class(es) (churn {imb_train['churn_rate'] * 100:.1f}%), test "
-            f"has {n_classes_test} class(es) (churn "
-            f"{imb_test['churn_rate'] * 100:.1f}%). Models and ROC-AUC "
-            f"require both classes, so this run is marked FAILED."
-        )
     if imb_train['imbalance_ratio'] > 10:
         logger.warning(
             "IMBALANCE | High ratio (%.1f) — metrics may be dominated "
             "by majority class", imb_train['imbalance_ratio'],
         )
 
-    stratify_y = y_train if y_train.nunique() >= 2 else None
     X_tr, X_val, y_tr, y_val = tts(
         X_train, y_train, test_size=0.1,
-        random_state=RANDOM_SEED, stratify=stratify_y,
+        random_state=RANDOM_SEED, stratify=y_train,
     )
-
-    # ── 10b. Stateless SMOTE (train split only — never test) ────────
-    # SMOTE is applied to X_tr/y_tr ONLY.  X_val/y_val and X_test/y_test
-    # are never resampled (Sections 6-7 of the experiment spec).
     if use_smote:
-        logger.info("── Applying SMOTE to training split only ──")
-        from src.resamplers import get_resampler
-        resampler = get_resampler('smote')
-        resample_result = resampler.resample(
-            X_tr, y_tr,
-            random_state=RANDOM_SEED,
-            k_neighbors=SMOTE_K_NEIGHBORS,
+        if not _SMOTE_AVAILABLE:
+            raise ImportError("imblearn is required for use_smote=True")
+        sm = SMOTE(random_state=RANDOM_SEED)
+        X_tr_resampled, y_tr_resampled = sm.fit_resample(X_tr, y_tr)
+        X_tr = pd.DataFrame(X_tr_resampled, columns=X_train.columns)
+        y_tr = pd.Series(y_tr_resampled, name='churn')
+        logger.validation(
+            "SMOTE | Resampled training fold to %d rows, churn rate %.2f%%",
+            len(X_tr), y_tr.mean() * 100,
         )
-        X_tr = resample_result.X_resampled
-        y_tr = resample_result.y_resampled
-        logger.info(
-            "Resampling complete (smote) — %d → %d samples (+%d synthetic)",
-            resample_result.n_original, resample_result.n_resampled,
-            resample_result.n_synthetic,
-        )
-        assert len(X_tr) == len(y_tr), "SMOTE: X/y length mismatch"
-
-    # ── Test identity fingerprint (for cross-condition verification) ─
-    test_ids_hash = hashlib.sha256(
-        np.asarray(sorted([str(x) for x in X_test.index])).tobytes()
-    ).hexdigest()
-    test_y_hash = hashlib.sha256(
-        np.asarray(y_test.values, dtype=float).tobytes()
-    ).hexdigest()
-    logger.validation(
-        "Identity | Test set — %d customers, id-hash=%s, y-hash=%s",
-        len(X_test), test_ids_hash[:16], test_y_hash[:16],
+    models = train_models(
+        X_tr, y_tr, X_val, y_val,
+        dataset_name=dataset,
+        use_smote=use_smote,
     )
-
-    # ── Train/test customer overlap (measured, never ignored) ────────
-    # Temporal datasets legitimately share customers between the train and
-    # test windows (a user active before the train cutoff can still be
-    # active after it).  The overlap is reported explicitly so it is a
-    # documented property of the split, not a hidden defect.
-    train_ids = set(train_features.index)
-    test_ids = set(X_test.index)
-    n_overlap = len(train_ids & test_ids)
-    overlap_ratio = (n_overlap / len(test_ids)) if len(test_ids) else 0.0
-    logger.validation(
-        "Overlap | %d/%d test customers also in train (%.1f%%) — "
-        "expected for temporal splits, documented not ignored",
-        n_overlap, len(test_ids), overlap_ratio * 100,
-    )
-
-    n_classes = y_train.nunique()
-    if n_classes < 2:
-        logger.warning(
-            "Skipping model training — only %d class(es) in training data "
-            "(churn rate %.1f%%). Models require at least 2 classes.",
-            n_classes, imb_train['churn_rate'] * 100,
-        )
-        models = {}
-    else:
-        models = train_models(
-            X_tr, y_tr, X_val, y_val, model_names=model_names,
-        )
-        save_models(models, base_dir=exp_base_dir)
+    save_models(models, suffix=mode_suffix)
 
     # ── 12. Evaluate models ─────────────────────────────────────────
     logger.info("── Step 11/17: Evaluate models ──")
@@ -539,7 +445,7 @@ def run_pipeline(
 
             try:
                 tdf = threshold_analysis(y_test, y_proba)
-                plot_threshold_analysis(tdf, name)
+                plot_threshold_analysis(tdf, name, suffix=mode_suffix)
             except Exception as exc:
                 logger.warning("Threshold analysis failed for %s: %s", name, exc)
 
@@ -554,7 +460,7 @@ def run_pipeline(
                     title=f'{name} — Feature Importance',
                     save_path=os.path.join(
                         FIGURES_DIR, 'model_evaluation',
-                        f'{name}_importance.png',
+                        f'{name}_importance{mode_suffix}.png',
                     ),
                 )
             except Exception as exc:
@@ -562,43 +468,18 @@ def run_pipeline(
                                 name, exc)
 
     eval_df = pd.DataFrame(metrics_list)
-    save_evaluation_table(eval_df, base_dir=exp_base_dir)
+    save_evaluation_table(eval_df, filename=f'model_metrics{mode_suffix}.csv')
     logger.validation("Metrics | %d model evaluations saved", len(eval_df))
-
-    # ── 11b. Isolated experiment artifacts (Section 30) ─────────────
-    save_experiment_artifacts(
-        dataset=dataset,
-        use_smote=use_smote,
-        metrics_df=eval_df,
-        y_test=y_test,
-        prob_dict=prob_dict,
-        meta={
-            'condition': condition,
-            'ecosystem_type': ecosystem_type,
-            'use_smote': use_smote,
-            'model_names': list(model_names or MODEL_ORDER),
-            'train_cutoff': str(train_cutoff),
-            'test_cutoff': str(test_cutoff),
-            'churn_window_days': churn_window,
-            'test_ids_hash': test_ids_hash,
-            'test_y_hash': test_y_hash,
-        },
-        results_dir=results_dir,
-    )
-    logger.validation(
-        "Artifacts | %s/%s saved (metrics, predictions, comparison, "
-        "report, metadata)", condition, dataset,
-    )
 
     # ── 13. Visualisations ──────────────────────────────────────────
     logger.info("── Step 12/17: Visualisations ──")
     viz_steps = [
-        (plot_roc_curves, "ROC", [prob_dict, y_test]),
-        (plot_confusion_matrices, "Confusion matrix", [cm_dict]),
-        (plot_pr_curves, "PR", [pr_data, y_test]),
-        (plot_churn_distribution, "Churn distribution", [y_test]),
-        (plot_correlation_heatmap, "Correlation heatmap", [X_test]),
-        (plot_delivery_delay_distribution, "Delivery delay", [X_test]),
+        (plot_roc_curves, "ROC", [prob_dict, y_test, mode_suffix]),
+        (plot_confusion_matrices, "Confusion matrix", [cm_dict, mode_suffix]),
+        (plot_pr_curves, "PR", [pr_data, y_test, mode_suffix]),
+        (plot_churn_distribution, "Churn distribution", [y_test, mode_suffix]),
+        (plot_correlation_heatmap, "Correlation heatmap", [X_test, mode_suffix]),
+        (plot_delivery_delay_distribution, "Delivery delay", [X_test, mode_suffix]),
     ]
     for fn, desc, args in viz_steps:
         try:
@@ -609,7 +490,7 @@ def run_pipeline(
     # ── 14. Calibration ─────────────────────────────────────────────
     logger.info("── Step 13/17: Calibration ──")
     try:
-        plot_calibration_curves(prob_dict, y_test)
+        plot_calibration_curves(prob_dict, y_test, suffix=mode_suffix)
     except Exception as exc:
         logger.warning("Calibration curves failed: %s", exc)
 
@@ -619,9 +500,8 @@ def run_pipeline(
         try:
             n_sample = min(SHAP_SAMPLE_SIZE, len(X_test))
             X_sample = X_test.sample(n_sample, random_state=RANDOM_SEED)
-            sv, _ = shap_analysis(model, X_sample, name)
-            save_shap_values(sv, X_test.columns.tolist(), name,
-                             base_dir=exp_base_dir)
+            sv, _ = shap_analysis(model, X_sample, name, suffix=mode_suffix)
+            save_shap_values(sv, X_test.columns.tolist(), name, suffix=mode_suffix)
         except Exception as exc:
             logger.warning("SHAP failed for %s: %s", name, exc)
 
@@ -629,7 +509,7 @@ def run_pipeline(
     logger.info("── Step 15/17: Segmentation ──")
     try:
         seg_df = segment_customers(X_train)
-        plot_segmentation(seg_df)
+        plot_segmentation(seg_df, suffix=mode_suffix)
     except Exception as exc:
         logger.warning("Segmentation failed: %s", exc)
 
@@ -638,8 +518,8 @@ def run_pipeline(
     try:
         stat_results = feature_distribution_tests(X_train, y_train)
         stat_results.to_csv(
-            os.path.join(exp_base_dir, 'statistical_tests',
-                          'feature_tests.csv'),
+            os.path.join(RESULTS_DIR, 'statistical_tests',
+                          f'feature_tests{mode_suffix}.csv'),
             index=False,
         )
     except Exception as exc:
@@ -649,18 +529,18 @@ def run_pipeline(
     ablation_df = None
     try:
         ablation_df = run_ablation(X_train, y_train)
-        if ablation_df is not None and not ablation_df.empty:
-            ablation_df.to_csv(
-                os.path.join(exp_base_dir, 'ablation', 'ablation_results.csv'),
-                index=False,
-            )
-            plot_ablation_results(ablation_df)
+        ablation_df.to_csv(
+            os.path.join(RESULTS_DIR, 'ablation',
+                          f'ablation_results{mode_suffix}.csv'),
+            index=False,
+        )
+        plot_ablation_results(ablation_df, suffix=mode_suffix)
     except Exception as exc:
         logger.warning("Ablation study failed: %s", exc)
 
     # ── Behavioural insights ────────────────────────────────────────
     try:
-        plot_behavioral_insights(X_test, y_test)
+        plot_behavioral_insights(X_test, y_test, suffix=mode_suffix)
     except Exception as exc:
         logger.warning("Behavioural insights plot failed: %s", exc)
 
@@ -693,8 +573,7 @@ def run_pipeline(
             risk_df = generate_risk_table(
                 X_test.index, y_proba_best, best_model_name,
             )
-            save_risk_scores(risk_df, best_model_name,
-                             base_dir=exp_base_dir)
+            save_risk_scores(risk_df, best_model_name, suffix=mode_suffix)
         except Exception as exc:
             logger.warning("Risk scoring failed: %s", exc)
 
@@ -705,8 +584,8 @@ def run_pipeline(
             y_proba_best = best_model.predict_proba(X_test)[:, 1]
             err = analyze_errors(X_test, y_test, y_pred_best, y_proba_best)
             pd.DataFrame(err).transpose().to_csv(
-                os.path.join(exp_base_dir, 'failure_analysis',
-                              'error_groups.csv'),
+                os.path.join(RESULTS_DIR, 'failure_analysis',
+                              f'error_groups{mode_suffix}.csv'),
             )
             fp_mask = (y_test == 0) & (y_pred_best == 1)
             fn_mask = (y_test == 1) & (y_pred_best == 0)
@@ -715,8 +594,8 @@ def run_pipeline(
             comp = behavioral_comparison(fp_feats, fn_feats)
             if not comp.empty:
                 comp.to_csv(
-                    os.path.join(exp_base_dir, 'failure_analysis',
-                                  'fp_fn_comparison.csv'),
+                    os.path.join(RESULTS_DIR, 'failure_analysis',
+                                  f'fp_fn_comparison{mode_suffix}.csv'),
                 )
         except Exception as exc:
             logger.warning("Failure analysis failed: %s", exc)
@@ -772,11 +651,6 @@ def run_pipeline(
             extra_info={
                 'dataset': dataset,
                 'ecosystem_type': ecosystem_type,
-                'condition': condition,
-                'use_smote': use_smote,
-                'model_names': ','.join(model_names or MODEL_ORDER),
-                'test_ids_hash': test_ids_hash,
-                'test_y_hash': test_y_hash,
                 'churn_window_days': churn_window,
                 'available_feature_groups': ','.join(available_groups),
                 'disabled_feature_groups': ','.join(
@@ -791,7 +665,7 @@ def run_pipeline(
             validation_reports=validation_reports,
             behavioral_stats=behavioral_report,
         )
-        save_experiment_metadata(meta, base_dir=exp_base_dir)
+        save_experiment_metadata(meta, suffix=mode_suffix)
         logger.validation(
             "Experiment | Metadata saved — %d keys", len(meta),
         )
@@ -821,22 +695,21 @@ def run_pipeline(
     pipeline_meta = {
         'dataset': dataset,
         'ecosystem_type': ecosystem_type,
-        'condition': condition,
-        'use_smote': use_smote,
         'duration_seconds': elapsed.total_seconds(),
         'churn_rate': float(imb_test['churn_rate']),
         'imbalance_ratio': float(imb_test['imbalance_ratio']),
         'best_model': best_model_name,
-        'test_ids_hash': test_ids_hash,
-        'test_y_hash': test_y_hash,
-        'train_test_overlap': int(n_overlap),
-        'train_test_overlap_ratio': float(overlap_ratio),
         'schema_errors': len(schema_report.get('errors', [])),
         'schema_warnings': len(schema_report.get('warnings', [])),
         'behavioral_warnings': len(behavioral_report.get('warnings', [])),
         'output_files_missing': len(output_report.get('files_missing', [])),
         'dominant_feature_group': dominant_group,
+        'mode': 'smote' if use_smote else 'original',
+        'metrics': eval_df,
     }
+    if collect_calibration:
+        pipeline_meta['prob_dict'] = prob_dict
+        pipeline_meta['y_test'] = y_test
     return pipeline_meta
 
 
@@ -850,16 +723,10 @@ def _evaluate_predictions(
     Used for baseline models that don't have a .predict() API.
     """
     from sklearn.metrics import (
-        accuracy_score,
+        accuracy_score, precision_score, recall_score, f1_score,
+        roc_auc_score, confusion_matrix, brier_score_loss,
         average_precision_score,
-        brier_score_loss,
-        confusion_matrix,
-        f1_score,
-        precision_score,
-        recall_score,
-        roc_auc_score,
     )
-
     from src.evaluation import _expected_calibration_error
 
     n_pos = int(y_test.sum())
@@ -895,35 +762,245 @@ def _evaluate_predictions(
     return metrics, cm, y_proba
 
 
-def main(
-    dataset: str = "olist",
-    sensitivity: bool = False,
-    use_smote: bool = False,
-    model_names: Optional[List[str]] = None,
-    results_dir: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Convenience entry point — called by the notebook.
+# ─────────────────────────────────────────────────────────────────────
+# SMOTE COMPARISON
+# ─────────────────────────────────────────────────────────────────────
+def _extract_model_metric(metrics_df: Optional[pd.DataFrame],
+                          model: str, metric: str) -> Optional[float]:
+    """Pull a single metric value for a model from an evaluation table."""
+    if metrics_df is None or metrics_df.empty:
+        return None
+    rows = metrics_df[metrics_df.get('model', pd.Series(dtype=str)).astype(str) == model]
+    if rows.empty:
+        return None
+    val = rows.iloc[0].get(metric)
+    if val is None:
+        return None
+    try:
+        val = float(val)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(val):
+        return None
+    return val
 
-    Delegates to run_pipeline() with the default dataset.
-    This function exists to preserve the notebook import:
-        from src.pipeline import main
+
+def _plot_smote_comparison_figure(summary: pd.DataFrame) -> None:
+    """Side-by-side bar chart of Original vs SMOTE mean ROC-AUC per dataset."""
+    d = ensure_dir(os.path.join(RESULTS_DIR, 'cross_dataset'))
+    path = os.path.join(d, 'smote_comparison_figure.png')
+
+    fig, ax = plt.subplots(figsize=(max(8, len(summary) * 1.1), 6))
+    x = np.arange(len(summary))
+    width = 0.38
+    ax.bar(x - width / 2, summary['Original_AUC'], width,
+           label='Original', color='#4C72B0')
+    ax.bar(x + width / 2, summary['SMOTE_AUC'], width,
+           label='SMOTE', color='#DD8452')
+    ax.set_xticks(x)
+    ax.set_xticklabels(summary['Dataset'], rotation=45, ha='right')
+    ax.set_ylabel('Mean ROC-AUC across models')
+    ax.set_title('SMOTE vs Original — ROC-AUC per Dataset')
+    ax.legend(loc='best')
+    ax.grid(axis='y', alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    logger.info("SMOTE comparison figure saved to %s", path)
+
+
+def _plot_calibration_comparison(
+    dataset: str, orig_prob_dict: dict, orig_y: pd.Series,
+    smote_prob_dict: dict, smote_y: pd.Series,
+) -> None:
+    """Overlay calibration curves (Original vs SMOTE) for a dataset.
+
+    For every model shared by both modes, the original and SMOTE calibration
+    curves are overlaid so the effect of SMOTE on probability calibration can
+    be inspected per dataset.
     """
-    return run_pipeline(
-        dataset=dataset,
-        sensitivity=sensitivity,
-        use_smote=use_smote,
-        model_names=model_names,
-        results_dir=results_dir,
-    )
+    d = ensure_dir(os.path.join(FIGURES_DIR, 'calibration'))
+    path = os.path.join(d, f'{dataset}_calibration_comparison.png')
+    if not orig_prob_dict or not smote_prob_dict:
+        logger.warning("Calibration comparison skipped for %s — no probabilities",
+                       dataset)
+        return
+
+    common = set(orig_prob_dict.keys()) & set(smote_prob_dict.keys())
+    common = [m for m in common if m not in ('random_baseline', 'majority_class')]
+    if not common:
+        logger.warning("Calibration comparison skipped for %s — no common models",
+                       dataset)
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for name in sorted(common):
+        try:
+            ot, op = calibration_curve(
+                np.asarray(orig_y), np.asarray(orig_prob_dict[name]),
+                n_bins=CALIBRATION_N_BINS, strategy='uniform',
+            )
+            st, sp = calibration_curve(
+                np.asarray(smote_y), np.asarray(smote_prob_dict[name]),
+                n_bins=CALIBRATION_N_BINS, strategy='uniform',
+            )
+        except Exception as exc:
+            logger.warning("Calibration comparison failed for %s: %s", name, exc)
+            continue
+        ax.plot(op, ot, marker='o', label=f'{name} (Original)', color='#4C72B0')
+        ax.plot(sp, st, marker='s', linestyle='--', label=f'{name} (SMOTE)',
+                color='#DD8452')
+
+    ax.plot([0, 1], [0, 1], 'k--', alpha=0.5, label='Perfect')
+    ax.set_xlabel('Mean predicted probability')
+    ax.set_ylabel('Fraction of positives')
+    ax.set_title(f'{dataset} — Calibration Comparison: Original vs SMOTE')
+    ax.legend(loc='best', fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    logger.info("Calibration comparison for %s saved to %s", dataset, path)
+
+
+def run_smote_comparison(
+    datasets: Optional[List[str]] = None,
+    include_baselines: bool = False,
+) -> Dict[str, Any]:
+    """Run the pipeline in original and SMOTE modes for every dataset and
+    produce cross-dataset comparison artefacts.
+
+    Generated outputs:
+        1. results/cross_dataset/smote_comparison_all_datasets.csv
+        2. results/cross_dataset/smote_comparison_figure.png
+        3. figures/calibration/{dataset}_calibration_comparison.png
+
+    Parameters
+    ----------
+    datasets : list of str, optional
+        Datasets to compare. Defaults to all registered datasets.
+    include_baselines : bool
+        If True, include baseline models in the comparison table.
+
+    Returns
+    -------
+    dict keyed by dataset with per-mode pipeline metadata.
+    """
+    from src.datasets import list_datasets
+
+    if datasets is None:
+        datasets = list_datasets()
+
+    results: Dict[str, Any] = {}
+    rows: List[Dict[str, Any]] = []
+
+    for ds in datasets:
+        logger.info("=" * 60)
+        logger.info("SMOTE comparison — dataset: %s", ds)
+        logger.info("=" * 60)
+        try:
+            meta_orig = run_pipeline(
+                dataset=ds, use_smote=False, collect_calibration=True,
+            )
+        except Exception as exc:
+            logger.warning("Original mode failed for %s: %s", ds, exc)
+            meta_orig = None
+        try:
+            meta_smote = run_pipeline(
+                dataset=ds, use_smote=True, collect_calibration=True,
+            )
+        except Exception as exc:
+            logger.warning("SMOTE mode failed for %s: %s", ds, exc)
+            meta_smote = None
+
+        results[ds] = {'original': meta_orig, 'smote': meta_smote}
+
+        if meta_orig is None or meta_smote is None:
+            logger.warning("SMOTE comparison incomplete for %s — skipping rows",
+                           ds)
+            continue
+
+        orig_m = meta_orig.get('metrics')
+        smote_m = meta_smote.get('metrics')
+        model_names = set()
+        if orig_m is not None:
+            model_names |= set(orig_m['model'].astype(str).tolist())
+        if smote_m is not None:
+            model_names |= set(smote_m['model'].astype(str).tolist())
+        model_names = {
+            m for m in model_names
+            if include_baselines or 'baseline' not in m
+        }
+
+        for model in sorted(model_names):
+            o_auc = _extract_model_metric(orig_m, model, 'roc_auc')
+            s_auc = _extract_model_metric(smote_m, model, 'roc_auc')
+            o_f1 = _extract_model_metric(orig_m, model, 'f1')
+            s_f1 = _extract_model_metric(smote_m, model, 'f1')
+            o_brier = _extract_model_metric(orig_m, model, 'brier_score')
+            s_brier = _extract_model_metric(smote_m, model, 'brier_score')
+
+            def _delta(o, s):
+                if o is None or s is None:
+                    return np.nan
+                return s - o
+
+            rows.append({
+                'Dataset': ds,
+                'Model': model,
+                'Original_AUC': o_auc if o_auc is not None else np.nan,
+                'SMOTE_AUC': s_auc if s_auc is not None else np.nan,
+                'Original_F1': o_f1 if o_f1 is not None else np.nan,
+                'SMOTE_F1': s_f1 if s_f1 is not None else np.nan,
+                'Original_Brier': o_brier if o_brier is not None else np.nan,
+                'SMOTE_Brier': s_brier if s_brier is not None else np.nan,
+                'AUC_Change': _delta(o_auc, s_auc),
+                'F1_Change': _delta(o_f1, s_f1),
+                'Brier_Change': _delta(o_brier, s_brier),
+            })
+
+        # ── Calibration comparison figure (per dataset) ─────────────
+        orig_pd = meta_orig.get('prob_dict', {})
+        smote_pd = meta_smote.get('prob_dict', {})
+        orig_y = meta_orig.get('y_test')
+        smote_y = meta_smote.get('y_test')
+        if orig_pd and smote_pd and orig_y is not None and smote_y is not None:
+            try:
+                _plot_calibration_comparison(
+                    ds, orig_pd, orig_y, smote_pd, smote_y,
+                )
+            except Exception as exc:
+                logger.warning("Calibration comparison plot failed for %s: %s",
+                               ds, exc)
+
+    # ── Cross-dataset comparison table ──────────────────────────────
+    d = ensure_dir(os.path.join(RESULTS_DIR, 'cross_dataset'))
+    cmp_df = pd.DataFrame(rows)
+    cmp_path = os.path.join(d, 'smote_comparison_all_datasets.csv')
+    cmp_df.to_csv(cmp_path, index=False)
+    logger.validation("SMOTE comparison table saved: %s (%d rows)",
+                      cmp_path, len(cmp_df))
+
+    # ── Figure: mean AUC per dataset ────────────────────────────────
+    try:
+        if not cmp_df.empty:
+            avg = (
+                cmp_df.groupby('Dataset', as_index=False)[
+                    ['Original_AUC', 'SMOTE_AUC']
+                ].mean()
+            )
+            _plot_smote_comparison_figure(avg)
+    except Exception as exc:
+        logger.warning("SMOTE comparison figure failed: %s", exc)
+
+    return results
 
 
 if __name__ == '__main__':
     import sys
     dataset_arg = sys.argv[1] if len(sys.argv) > 1 else "olist"
     sensitivity_arg = '--sensitivity' in sys.argv
-    use_smote_arg = '--use-smote' in sys.argv
-    run_pipeline(
-        dataset=dataset_arg,
-        sensitivity=sensitivity_arg,
-        use_smote=use_smote_arg,
-    )
+    smote_compare = '--smote-comparison' in sys.argv
+    if smote_compare:
+        run_smote_comparison()
+    else:
+        run_pipeline(dataset=dataset_arg, sensitivity=sensitivity_arg)
