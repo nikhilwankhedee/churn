@@ -11,11 +11,18 @@ from xgboost import XGBClassifier
 
 from src.config import (
     FEATURE_GROUPS, RANDOM_SEED, LOGISTIC_REGRESSION_PARAMS,
-    RANDOM_FOREST_PARAMS, XGBOOST_PARAMS, ABLATION_N_SPLITS,
+    RANDOM_FOREST_PARAMS, XGBOOST_PARAMS, LIGHTGBM_PARAMS, ABLATION_N_SPLITS,
 )
 from src.utils import get_logger
 
 logger = get_logger(__name__)
+
+try:
+    import lightgbm as lgb
+    _LIGHTGBM_AVAILABLE = True
+except ImportError:
+    lgb = None
+    _LIGHTGBM_AVAILABLE = False
 
 
 def _model_factory(name: str):
@@ -27,18 +34,20 @@ def _model_factory(name: str):
         params = dict(XGBOOST_PARAMS)
         params.pop('scale_pos_weight', None)
         return XGBClassifier(**params)
+    if name == 'lightgbm':
+        if not _LIGHTGBM_AVAILABLE:
+            raise ImportError("lightgbm is not installed")
+        return lgb.LGBMClassifier(**LIGHTGBM_PARAMS)
     raise ValueError(f"Unknown model: {name}")
 
 
 def run_ablation(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
-    if y.nunique() < 2:
-        logger.warning("Ablation skipped — only %d class(es) in labels", y.nunique())
-        return pd.DataFrame()
-
     cv = StratifiedKFold(n_splits=ABLATION_N_SPLITS, shuffle=True,
                           random_state=RANDOM_SEED)
     all_features = list(X.columns)
     model_names = ['logistic_regression', 'random_forest', 'xgboost']
+    if _LIGHTGBM_AVAILABLE:
+        model_names.append('lightgbm')
     records = []
 
     for model_name in model_names:
