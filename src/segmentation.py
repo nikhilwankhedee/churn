@@ -10,7 +10,10 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 
-from src.config import N_CLUSTERS, RANDOM_SEED
+from src.config import (
+    N_CLUSTERS, RANDOM_SEED,
+    SEGMENTATION_MAX_ROWS, SEGMENTATION_SILHOUETTE_ROWS,
+)
 from src.run_context import models_dir
 from src.utils import get_logger, ensure_dir
 
@@ -30,6 +33,14 @@ def segment_customers(features: pd.DataFrame) -> pd.DataFrame:
         result['pca_y'] = 0.0
         return result
 
+    # Cap the cohort so KMeans/PCA stay fast and the O(n^2) silhouette matrix
+    # stays bounded on very large datasets (e.g. retailrocket).
+    if n > SEGMENTATION_MAX_ROWS:
+        logger.info("Segmenting on %d-row seeded subsample (full cohort: %d)",
+                    SEGMENTATION_MAX_ROWS, n)
+        X = X.sample(n=SEGMENTATION_MAX_ROWS, random_state=RANDOM_SEED)
+        n = SEGMENTATION_MAX_ROWS
+
     n_clusters = min(N_CLUSTERS, n - 1) if n > 1 else 1
     if n_clusters < 1:
         n_clusters = 1
@@ -43,7 +54,14 @@ def segment_customers(features: pd.DataFrame) -> pd.DataFrame:
 
     if n_clusters > 1:
         try:
-            sil = silhouette_score(X_scaled, clusters)
+            if n > SEGMENTATION_SILHOUETTE_ROWS:
+                rng = np.random.RandomState(RANDOM_SEED)
+                idx = rng.choice(n, SEGMENTATION_SILHOUETTE_ROWS, replace=False)
+                logger.info("Silhouette on %d-row subsample (cohort: %d)",
+                            SEGMENTATION_SILHOUETTE_ROWS, n)
+            else:
+                idx = slice(None)
+            sil = silhouette_score(X_scaled[idx], clusters[idx])
             logger.info("Silhouette score: %.4f", sil)
         except Exception as exc:
             logger.debug("Silhouette score failed: %s", exc)
@@ -56,7 +74,7 @@ def segment_customers(features: pd.DataFrame) -> pd.DataFrame:
     pca = PCA(n_components=2, random_state=RANDOM_SEED)
     coords = pca.fit_transform(X_scaled)
 
-    result = features.copy()
+    result = features.loc[X.index].copy()
     result['segment'] = clusters.astype(int)
     result['pca_x'] = coords[:, 0]
     result['pca_y'] = coords[:, 1]

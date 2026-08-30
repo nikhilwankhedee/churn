@@ -131,6 +131,11 @@ SVM_PARAMS: dict = {
 # SEGMENTATION
 # ──────────────────────────────────────────────
 N_CLUSTERS: int = 5
+# Segmentation is only used for the customer-scatter visualisation, so on very
+# large cohorts (e.g. retailrocket) it is computed on a seeded subsample to
+# keep KMeans/PCA fast and to bound the O(n^2) silhouette-score matrix.
+SEGMENTATION_MAX_ROWS: int = 20_000
+SEGMENTATION_SILHOUETTE_ROWS: int = 10_000
 
 # ──────────────────────────────────────────────
 # STANDARDISED FEATURE GROUP NAMES
