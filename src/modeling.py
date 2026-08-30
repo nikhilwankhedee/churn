@@ -139,11 +139,11 @@ def train_models(
     xgb_params['scale_pos_weight'] = 1.0 if use_smote else scale_pos
 
     if X_val is not None and y_val is not None:
+        xgb_params['early_stopping_rounds'] = 10
         model = XGBClassifier(**xgb_params)
         model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=10,
             verbose=False,
         )
     else:
