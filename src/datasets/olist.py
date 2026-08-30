@@ -283,6 +283,28 @@ class OlistAdapter(BaseDatasetAdapter):
         return ["purchase", "monetary", "inactivity", "review",
                 "delivery", "payment", "cadence"]
 
+    # ── User-disjoint temporal split ─────────────────────────────────
+
+    @property
+    def uses_user_disjoint_split(self) -> bool:
+        """Olist uses a user-disjoint temporal holdout to prevent the same
+        customer appearing in both train and test (which the plain global
+        temporal cutoffs permit)."""
+        return True
+
+    def build_user_disjoint_modeling_data(self, df: pd.DataFrame) -> tuple:
+        """Build user-disjoint train/test features + labels via the shared
+        temporal helper (late-arrival test cohort)."""
+        from src.user_disjoint_split import build_user_disjoint_modeling_data
+        if self.churn_window_days is None:
+            raise RuntimeError("Olist requires a churn window for UD split")
+        X_train, X_test, y_train, y_test = build_user_disjoint_modeling_data(
+            df,
+            churn_window_days=self.churn_window_days,
+            feature_groups=self.available_feature_groups,
+        )
+        return X_train, X_test, y_train, y_test
+
     # ── Metadata ─────────────────────────────────────────────────────
 
     @property

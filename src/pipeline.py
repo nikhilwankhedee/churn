@@ -232,8 +232,20 @@ def run_pipeline(
 
     custom_user_relative = hasattr(adapter, 'build_user_relative_modeling_data')
     custom_native_split = hasattr(adapter, 'build_native_modeling_data')
+    custom_user_disjoint = hasattr(adapter, 'build_user_disjoint_modeling_data')
 
-    if custom_user_relative:
+    if custom_user_disjoint:
+        logger.info("── Step 4/17: User-disjoint temporal split ──")
+        train_features, test_features, train_labels_df, test_labels_df = (
+            adapter.build_user_disjoint_modeling_data(df)
+        )
+        train_cutoff = 'user_disjoint_train_observation'
+        test_cutoff = 'user_disjoint_test_snapshot'
+        logger.validation(
+            "UserDisjoint | Train: %d customers | Test: %d customers",
+            len(train_features), len(test_features),
+        )
+    elif custom_user_relative:
         logger.info("── Step 4/17: User-relative modeling split ──")
         train_features, test_features, train_labels_df, test_labels_df = (
             adapter.build_user_relative_modeling_data(df)
@@ -538,7 +550,7 @@ def run_pipeline(
     # ── Ablation study ──────────────────────────────────────────────
     ablation_df = None
     try:
-        ablation_df = run_ablation(X_train, y_train)
+        ablation_df = run_ablation(X_train, y_train, dataset_name=dataset)
         ablation_df.to_csv(
             os.path.join(results_dir('ablation'),
                           f'ablation_results{mode_suffix}.csv'),
