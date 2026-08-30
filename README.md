@@ -1,222 +1,143 @@
-# ChurnLab
+# Behavioral Churn Prediction Across Ecosystems
 
-**Universal Customer Churn Research Framework**
+A reproducible, research-grade framework for predicting customer churn across
+**heterogeneous ecosystem types** using standardized behavioral feature
+engineering. Built for academic publication.
 
-A production-ready framework for onboarding, benchmarking, explaining, and publishing churn prediction experiments across heterogeneous datasets.
+## Research Question
 
-## Installation
+**"How does ecosystem structure and behavioral observability influence churn predictability?"**
 
-```bash
-pip install churnlab
-```
+Not: "Which ML model performs best."
 
-## First Run
+## Supported Ecosystems
 
-```bash
-churn
-```
-
-This launches the interactive home screen:
-
-```
-         _____ _                 _                    __
-    ____/ /__(_)___  __      __(_)___  _____       / /___ _      _______
-   / __  / / / __ \_ | /| / / / __ \/ ___/______/ / __ \| |/ /| / ___/
-  / /_/ / / / / / / | |/ |/ / / / / (__  )_____/ / /_/ / |/ |/ (__  )
- /\__,_/_/_/_/ /_/  |__/|__/_/_/ /_/ /____/    /_/\____/|__/|__/____/
-
-  v2.0.0 — Universal Customer Churn Research Framework
-
-  6 dataset(s) registered: instacart, olist, online_retail_ii, rees46, retailrocket, telco
-
-  What would you like to do?
-
-  1   Scan current directory for datasets
-  2   Register a new dataset (Wizard)
-  3   Download benchmark datasets
-  4   View registered datasets
-  5   Run benchmark
-  6   Dataset health check (Doctor)
-  7   Explain model predictions
-  8   Compare datasets
-  9   Profile a dataset
-  10  Export results
-  11  View experiments
-  12  Launch dashboard
-  13  Documentation
-  0   Exit
-```
-
-## Onboarding a New Dataset
-
-```bash
-# Point the wizard at any CSV
-churn wizard path/to/data.csv
-
-# The wizard:
-#   ✓ Scans columns
-#   ✓ Detects customer ID, timestamps, monetary values
-#   ✓ Infers churn strategy
-#   ✓ Generates manifest YAML
-#   ✓ Registers dataset
-#   ✓ Shows readiness score
-
-# Check dataset health
-churn doctor data.csv
-
-# Run the benchmark
-churn benchmark data.csv
-
-# Explain the model
-churn explain my_dataset
-
-# Export publication-ready results
-churn export my_dataset
-```
-
-## Complete Workflow
-
-```bash
-# 1. Install
-pip install churnlab
-
-# 2. Launch interactive mode
-churn
-
-# 3. Register a dataset
-churn wizard data.csv --name my_company
-
-# 4. Check health
-churn doctor data.csv
-
-# 5. Benchmark
-churn run my_company
-
-# 6. Explain
-churn explain my_company
-
-# 7. Compare with benchmarks
-churn compare my_company,olist,telco
-
-# 8. Export for publication
-churn export my_company --formats latex,html,markdown
-
-# 9. Reproduce later
-churn experiments
-churn reproduce experiment_my_company_20260725_120000
-```
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `churn` | Interactive home screen |
-| `churn wizard` | Dataset registration wizard |
-| `churn doctor` | Comprehensive data health analysis |
-| `churn benchmark` | Auto-discover and benchmark datasets |
-| `churn explain` | Natural language model explanation |
-| `churn compare` | Compare datasets and distributions |
-| `churn profile` | Profile a dataset with insights |
-| `churn export` | Export results (LaTeX, HTML, CSV, etc.) |
-| `churn datasets` | List supported benchmark datasets |
-| `churn download` | Get download instructions |
-| `churn experiments` | List experiment history |
-| `churn reproduce` | Re-run a previous experiment |
-| `churn dashboard` | Launch web dashboard |
-| `churn plugin create` | Generate plugin template |
-| `churn run one` | Run pipeline on single dataset |
-| `churn run all` | Run pipeline on all datasets |
-| `churn validate` | Validate dataset schema |
-| `churn profile` | Comprehensive data profiling |
-| `churn health` | Framework health check |
-
-## Supported Datasets
-
-| Dataset | Ecosystem | Customers | Window |
-|---------|-----------|-----------|--------|
-| Olist | Transactional Marketplace | 99,441 | 180d |
-| REES46 | Transactional Marketplace | 700,000 | 180d |
-| RetailRocket | Clickstream Commerce | 14,000 | 30d |
-| Online Retail II | Habitual Retail | 4,372 | 90d |
-| Instacart | Habitual Retail | 206,209 | 60d |
-| IBM Telco | Subscription | 7,043 | Native |
-
-## Features
-
-- **Interactive home screen** — guided workflow for first-time users
-- **Dataset Wizard** — intelligent CSV inspection and manifest generation
-- **Dataset Doctor** — 16 health checks with actionable recommendations
-- **Auto Explanations** — natural language model interpretation
-- **Benchmark UX** — progress bars, live status, leaderboard
-- **Publication Export** — LaTeX, Markdown, CSV, HTML, JSON
-- **Experiment Management** — track, list, and reproduce runs
-- **Dashboard** — optional local web UI
-- **Plugin System** — extend with custom strategies, adapters, models
-- **8 behavioral feature groups** — purchase, monetary, inactivity, review, delivery, payment, engagement, cadence
-- **3 models** — Logistic Regression, Random Forest, XGBoost
-- **8+ metrics** — AUC, F1, precision, recall, Brier, calibration error
-- **SHAP explainability** — feature importance analysis
-- **4-layer validation** — schema, behavioral, output, cross-dataset
-
-## Python API
-
-```python
-from src.api import ChurnFramework
-
-fw = ChurnFramework()
-result = fw.run("olist")
-profile = fw.profile("olist")
-comparison = fw.compare(["olist", "rees46"])
-```
+| Dataset | Type | Churn Window | Behavior |
+|---------|------|-------------|----------|
+| Olist | Transactional Marketplace | 180 days | Sparse repurchase, inactivity-dominated churn |
+| REES46 | Transactional Marketplace | 180 days | Richer behavioral signals, marketplace structure |
+| RetailRocket | Clickstream Commerce | 30 days | Browsing + purchase, strong engagement observability |
+| Online Retail II | Habitual Retail | 90 days | Repeat gift purchases, seasonal patterns |
+| Instacart | Habitual Retail | 60 days | High weekly/biweekly cadence, grocery habitual |
+| IBM Telco | Subscription | Native label | Contractual churn, explicit tenure/Churn column |
 
 ## Architecture
 
 ```
-churnlab/
+project_root/
 ├── src/
-│   ├── cli/            # Interactive CLI (Typer + Rich)
-│   ├── core/           # Registry, context, infrastructure
-│   ├── datasets/       # Dataset adapters (built-in + generic)
-│   ├── churn/          # Churn labeling strategies
-│   ├── models/         # Model wrappers
-│   ├── metrics/        # Evaluation metrics
-│   ├── reports/        # Report generators
-│   ├── wizard/         # Dataset registration wizard
-│   ├── profiling/      # Data profiling
-│   ├── doctor/         # Dataset health analyzer
-│   ├── explain/        # Auto-explanation engine
-│   ├── experiments/    # Experiment management
-│   ├── downloads/      # Benchmark dataset catalog
-│   ├── export/         # Publication export engine
-│   ├── dashboard/      # Web dashboard
-│   ├── plugins/        # Plugin scaffolding
-│   └── discovery/      # Dataset auto-discovery
-├── configs/            # YAML manifests
-├── docs/               # Documentation
-└── tests/              # Test suite
+│   ├── __init__.py
+│   ├── datasets/                  # Dataset adapters (one per dataset)
+│   │   ├── __init__.py            # Registry: get_dataset("olist"), list_datasets()
+│   │   ├── base.py                # AbstractBaseDataset — contract for all adapters
+│   │   ├── olist.py
+│   │   ├── rees46.py
+│   │   ├── retailrocket.py
+│   │   ├── online_retail_ii.py
+│   │   ├── instacart.py
+│   │   └── telco.py
+│   ├── config.py                  # Central config, paths, hyperparameters
+│   ├── churn_labeling.py          # Dataset-aware temporal churn labeling
+│   ├── feature_engineering.py     # Standardised-schema feature groups (8 groups)
+│   ├── modeling.py                # LR, RF, XGBoost — unchanged
+│   ├── evaluation.py              # Metrics, ECE, imbalance analysis
+│   ├── baselines.py               # Majority-class & random baselines
+│   ├── pipeline.py                # Dataset-agnostic orchestrator
+│   ├── calibration.py             # Calibration curves with bootstrap CI
+│   ├── explainability.py          # SHAP analysis
+│   ├── visualization.py           # Publication-quality figures
+│   ├── statistical_tests.py       # Mann-Whitney U, Cliff's delta, BH correction
+│   ├── segmentation.py            # K-Means with PCA
+│   ├── ablation.py                # Feature-group ablation study
+│   ├── risk_scoring.py            # Churn probability → 0-100 risk score
+│   ├── failure_analysis.py        # FP/FN error analysis
+│   ├── data_quality.py            # Automated data quality reports
+│   ├── exports.py                 # Model, data, metric, master results export
+│   ├── experiment_tracker.py      # Metadata logging
+│   └── utils.py                   # Logging, seeding, defensive helpers
+├── figures/                       # All generated plots
+├── results/                       # Metrics, CSVs, master_results.csv
+├── models/                        # Trained model artefacts
+├── processed_data/                # Train/test feature matrices
+├── requirements.txt
+└── README.md
 ```
 
-## Development
+## Usage
 
 ```bash
-git clone <repo-url>
-cd churnlab
-pip install -e ".[dev]"
-churn health  # verify installation
+pip install -r requirements.txt
 ```
 
-## Citation
+Place dataset CSV files in `data/<dataset_name>/` or Kaggle input directories.
 
-```bibtex
-@software{wankhede2026churnlab,
-  author    = {Nikhil Wankhede},
-  title     = {ChurnLab: Universal Customer Churn Research Framework},
-  version   = {2.0.0},
-  year      = {2026},
-  url       = {https://github.com/your-username/churnlab}
-}
+Run the pipeline for any supported dataset:
+
+```bash
+# Single dataset
+python -m src.pipeline olist
+
+# Or from Python
+python -c "from src.pipeline import run_pipeline; run_pipeline('instacart')"
 ```
 
-## License
+## Standardised Feature Groups
 
-MIT License. See [LICENSE](LICENSE) for details.
+| Group | Required Columns | Features | Availability |
+|-------|-----------------|----------|-------------|
+| purchase | customer_id, event_time, event_type | total_orders, total_items, repeat_ratio | All transactional datasets |
+| monetary | transaction_value | total_spent, avg/max/min order value | Olist, REES46, Online Retail II |
+| inactivity | event_time | days_since_last_purchase | All (universal) |
+| review | review_score | avg/min/var score, low/positive ratio | Datasets with reviews |
+| delivery | delivery_delay | avg/max delay, on-time ratio | Olist only |
+| payment | payment_type | avg_value, preferred type dummies | Olist only |
+| engagement | event_type, session_id | page_views, cart_adds, sessions | Clickstream datasets |
+| cadence | event_time | avg_days_between_orders, lifetime_days | All transactional |
+
+Missing groups are automatically detected and disabled with an explicit log entry.
+
+## Baselines
+
+Every model run includes:
+- **Majority-class baseline** — always predict the majority class
+- **Random baseline** — predict with probability = training churn rate
+
+All metrics must be compared against these to establish lift.
+
+## Cross-Dataset Results
+
+Automatically builds `results/cross_dataset/master_results.csv`:
+
+```
+dataset, ecosystem_type, model, roc_auc, pr_auc, f1, precision, recall,
+brier_score, calibration_error, churn_rate, imbalance_ratio,
+dominant_feature_group
+```
+
+## Churn Definition by Dataset
+
+Each dataset uses a **behaviorally justified** churn window, defined *before*
+evaluation and never tuned for better metrics:
+
+- **Olist (180d)**: 3x median inter-purchase interval (~60d)
+- **REES46 (180d)**: Matches Olist for cross-dataset comparability
+- **RetailRocket (30d)**: Dataset spans only ~4.5 months; clickstream users churn faster
+- **Online Retail II (90d)**: 2x median inter-purchase interval (~45d), seasonal gift retail
+- **Instacart (60d)**: ~4x median inter-purchase interval (~14d), weekly grocery cadence
+- **Telco**: Native contractual churn label — no inactivity window applied
+
+## Reproducibility
+
+- All random seeds fixed (RANDOM_SEED=42)
+- Package versions pinned in requirements.txt
+- Experiment metadata logged with platform, config, metrics
+- Temporal cutoffs are deterministic given the data
+- Kaggle-compatible (auto-detects `/kaggle/input/`)
+
+## Models
+
+| Model | Imbalance Handling | Key Parameter |
+|-------|-------------------|---------------|
+| Logistic Regression | class_weight='balanced' | C=0.1, lbfgs |
+| Random Forest | class_weight='balanced_subsample' | n_est=200, depth=10 |
+| XGBoost | scale_pos_weight | lr=0.05, early stopping |
