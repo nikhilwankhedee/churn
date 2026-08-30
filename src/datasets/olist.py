@@ -247,6 +247,8 @@ class OlistAdapter(BaseDatasetAdapter):
             "order_purchase_timestamp": "event_time",
             "payment_value": "transaction_value",
         }
+        if "customer_unique_id" in df.columns and "customer_id" in df.columns:
+            df = df.drop(columns=["customer_id"])
         df = df.rename(columns=mapping, errors="ignore")
 
         # Add event_type — all rows are purchases for Olist
