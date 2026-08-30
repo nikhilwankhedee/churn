@@ -12,6 +12,7 @@ from xgboost import XGBClassifier
 from src.config import (
     FEATURE_GROUPS, RANDOM_SEED, LOGISTIC_REGRESSION_PARAMS,
     RANDOM_FOREST_PARAMS, XGBOOST_PARAMS, LIGHTGBM_PARAMS, ABLATION_N_SPLITS,
+    ABLATION_MAX_ROWS, ABLATION_ESTIMATORS,
 )
 from src.utils import get_logger
 
@@ -29,15 +30,20 @@ def _model_factory(name: str):
     if name == 'logistic_regression':
         return LogisticRegression(**LOGISTIC_REGRESSION_PARAMS)
     if name == 'random_forest':
-        return RandomForestClassifier(**RANDOM_FOREST_PARAMS)
+        params = dict(RANDOM_FOREST_PARAMS)
+        params['n_estimators'] = ABLATION_ESTIMATORS
+        return RandomForestClassifier(**params)
     if name == 'xgboost':
         params = dict(XGBOOST_PARAMS)
         params.pop('scale_pos_weight', None)
+        params['n_estimators'] = ABLATION_ESTIMATORS
         return XGBClassifier(**params)
     if name == 'lightgbm':
         if not _LIGHTGBM_AVAILABLE:
             raise ImportError("lightgbm is not installed")
-        return lgb.LGBMClassifier(**LIGHTGBM_PARAMS)
+        params = dict(LIGHTGBM_PARAMS)
+        params['n_estimators'] = ABLATION_ESTIMATORS
+        return lgb.LGBMClassifier(**params)
     raise ValueError(f"Unknown model: {name}")
 
 
@@ -50,12 +56,22 @@ def run_ablation(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
         model_names.append('lightgbm')
     records = []
 
+    # Bound the CV cost on very large cohorts: the study is unchanged, it just
+    # runs on a seeded subsample (same precedent as SVM / segmentation caps).
+    if len(X) > ABLATION_MAX_ROWS:
+        _X = X.sample(n=ABLATION_MAX_ROWS, random_state=RANDOM_SEED)
+        _y = y.loc[_X.index]
+        logger.info("Ablation on %d-row seeded subsample (full cohort: %d)",
+                    ABLATION_MAX_ROWS, len(X))
+    else:
+        _X, _y = X, y
+
     for model_name in model_names:
         logger.info("Ablation — %s", model_name)
 
         clf_all = _model_factory(model_name)
         try:
-            scores = cross_val_score(clf_all, X, y, cv=cv, scoring='roc_auc',
+            scores = cross_val_score(clf_all, _X, _y, cv=cv, scoring='roc_auc',
                                      n_jobs=1)
             records.append({
                 'model': model_name,
@@ -73,7 +89,7 @@ def run_ablation(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
                 continue
             clf = _model_factory(model_name)
             try:
-                scores = cross_val_score(clf, X[remaining], y, cv=cv,
+                scores = cross_val_score(clf, _X[remaining], _y, cv=cv,
                                          scoring='roc_auc', n_jobs=1)
                 records.append({
                     'model': model_name,

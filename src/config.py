@@ -188,7 +188,14 @@ PAYMENT_DUMMY_PREFIX: str = 'pay_type_'
 # ──────────────────────────────────────────────
 # ABLATION / CV
 # ──────────────────────────────────────────────
-ABLATION_N_SPLITS: int = 5
+ABLATION_N_SPLITS: int = 3
+# Ablation runs 4 models x (1 + #feature-groups) separate CV fits; on very
+# large training cohorts (instacart/rees46/retailrocket) that can balloon to
+# hours. Keep the full study but compute it on a seeded subsample when needed.
+ABLATION_MAX_ROWS: int = 30_000
+# The ablation is a group-level ROC-AUC diagnostic, so its tree models are
+# sized down to speed up the ~hundreds of CV fits (results stay comparable).
+ABLATION_ESTIMATORS: int = 100
 ABLATION_RANDOM_STATE: int = RANDOM_SEED
 
 # ──────────────────────────────────────────────
