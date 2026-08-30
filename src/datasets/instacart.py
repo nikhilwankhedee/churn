@@ -14,25 +14,21 @@ the cadence is high, a shorter window than marketplace datasets is justified.
 Data source: https://www.kaggle.com/datasets/psparks/instacart-market-basket-analysis
 """
 import os
-from typing import Any, Dict, List, Optional
-
 import pandas as pd
+import numpy as np
+from typing import Optional, List, Dict, Any
 
 from src.datasets.base import BaseDatasetAdapter
+from src.config import ON_KAGGLE, INSTACART_DIR, RANDOM_SEED
 from src.utils import get_logger
 
 logger = get_logger(__name__)
 
 ORDERS_FILE = "instacart_orders.csv"
-ORDERS_FILE_KAGGLE = "orders.csv"
 PRODUCTS_FILE = "instacart_products.csv"
-PRODUCTS_FILE_KAGGLE = "products.csv"
 AISLES_FILE = "instacart_aisles.csv"
-AISLES_FILE_KAGGLE = "aisles.csv"
 DEPARTMENTS_FILE = "instacart_departments.csv"
-DEPARTMENTS_FILE_KAGGLE = "departments.csv"
 ORDER_PRODUCTS_PRIOR = "instacart_order_products__prior.csv"
-ORDER_PRODUCTS_PRIOR_KAGGLE = "order_products__prior.csv"
 
 
 class InstacartAdapter(BaseDatasetAdapter):
@@ -49,20 +45,8 @@ class InstacartAdapter(BaseDatasetAdapter):
         return 60
 
     @property
-    def required_files(self) -> list:
-        return [ORDERS_FILE]
-
-    @property
-    def alternate_filenames(self) -> Dict[str, List[str]]:
-        """Kaggle ships these files under their original names (e.g.
-        ``orders.csv`` for ``instacart_orders.csv``).  The resolver treats a
-        required file as present if any alternate exists."""
-        return {
-            ORDERS_FILE: [ORDERS_FILE_KAGGLE],
-            PRODUCTS_FILE: [PRODUCTS_FILE_KAGGLE],
-            AISLES_FILE: [AISLES_FILE_KAGGLE],
-            DEPARTMENTS_FILE: [DEPARTMENTS_FILE_KAGGLE],
-        }
+    def data_dir(self) -> str:
+        return INSTACART_DIR if ON_KAGGLE else super().data_dir
 
     # ── Data loading ─────────────────────────────────────────────────
 
@@ -83,45 +67,40 @@ class InstacartAdapter(BaseDatasetAdapter):
     def _sample_if_large(self, df: pd.DataFrame, max_rows: int = 1_000_000,
                          name: str = "data") -> pd.DataFrame:
         if len(df) > max_rows:
-            original_len = len(df)
             frac = max_rows / len(df)
             df = df.sample(frac=frac, random_state=42)
             logger.warning(
                 "%s large (%d rows) — sampled to %d rows for memory safety",
-                name, original_len, len(df),
+                name, len(df), len(df),
             )
         return df
 
-    def _resolve_file(self, *candidates: str) -> Optional[str]:
-        """Return path of first existing file, or None."""
-        for name in candidates:
-            path = os.path.join(self.data_dir, name)
-            if os.path.isfile(path):
-                return path
-        return None
+    @property
+    def uses_user_relative_churn_label(self) -> bool:
+        return True
 
     def load_raw_data(self) -> pd.DataFrame:
-        orders_path = self._resolve_file(ORDERS_FILE, ORDERS_FILE_KAGGLE)
-        products_path = self._resolve_file(PRODUCTS_FILE, PRODUCTS_FILE_KAGGLE)
-        aisles_path = self._resolve_file(AISLES_FILE, AISLES_FILE_KAGGLE)
-        departments_path = self._resolve_file(DEPARTMENTS_FILE, DEPARTMENTS_FILE_KAGGLE)
-        order_products_path = self._resolve_file(ORDER_PRODUCTS_PRIOR, ORDER_PRODUCTS_PRIOR_KAGGLE)
-
         orders = self._safe_read_csv(
-            orders_path, "orders",
+            os.path.join(self.data_dir, ORDERS_FILE), "orders",
             dtype={"order_id": int, "user_id": str, "eval_set": str},
-        ) if orders_path else None
-        products = self._safe_read_csv(products_path, "products") if products_path else None
-        aisles = self._safe_read_csv(aisles_path, "aisles") if aisles_path else None
-        departments = self._safe_read_csv(departments_path, "departments") if departments_path else None
+        )
+        products = self._safe_read_csv(
+            os.path.join(self.data_dir, PRODUCTS_FILE), "products",
+        )
+        aisles = self._safe_read_csv(
+            os.path.join(self.data_dir, AISLES_FILE), "aisles",
+        )
+        departments = self._safe_read_csv(
+            os.path.join(self.data_dir, DEPARTMENTS_FILE), "departments",
+        )
         order_products = self._safe_read_csv(
-            order_products_path, "order_products__prior",
-        ) if order_products_path else None
+            os.path.join(self.data_dir, ORDER_PRODUCTS_PRIOR),
+            "order_products__prior",
+        )
 
         if orders is None:
             raise FileNotFoundError(
-                f"Required file {ORDERS_FILE}/{ORDERS_FILE_KAGGLE} "
-                f"not found in {self.data_dir}"
+                f"Required file {ORDERS_FILE} not found in {self.data_dir}"
             )
 
         orders = orders.copy()
@@ -155,94 +134,23 @@ class InstacartAdapter(BaseDatasetAdapter):
     def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
-        # Build a synthetic event_time from order_number and
-        # days_since_prior_order.  Instacart ships no calendar timestamps,
-        # so we reconstruct each user's timeline from inter-order gaps.
-        #
-        # Strategy — rank-based temporal distribution:
-        #   1. Preserve each user's real inter-order spacing exactly.
-        #   2. Distribute users across a fixed observation window so that
-        #      users with longer histories start earlier and users with
-        #      shorter histories start later.
-        #   3. No user's final order coincides with another's (except by
-        #      chance of identical spans AND rank, which is negligible).
-        #
-        # This avoids the previous approach's failure mode where anchoring
-        # all users' final orders to a single horizon date collapsed the
-        # temporal distribution and produced degenerate churn labels.
+        # Build synthetic event_time from order_number and days_since_prior_order
+        # We approximate a timeline: assume most recent order = max_date
         if "days_since_prior_order" in df.columns and "order_number" in df.columns:
             df["days_since_prior_order"] = (
                 pd.to_numeric(df["days_since_prior_order"], errors="coerce").fillna(0)
             )
-
-            # Reconstruct the timeline at order level (product rows within an
-            # order must not inflate the cumulative-day sum).
-            if {"order_id", "user_id"}.issubset(df.columns):
-                order_lvl = (
-                    df[["user_id", "order_id", "days_since_prior_order"]]
-                    .drop_duplicates(subset=["user_id", "order_id"])
-                    .copy()
-                )
-            else:
-                order_lvl = (
-                    df[["user_id", "days_since_prior_order"]]
-                    .drop_duplicates(subset=["user_id"])
-                    .copy()
-                )
-
-            # Cumulative days from each user's first order.
-            order_lvl["days_from_start"] = (
-                order_lvl.groupby("user_id")["days_since_prior_order"]
+            max_days = df["days_since_prior_order"].sum()
+            df["days_from_end"] = (
+                df.groupby("user_id")["days_since_prior_order"]
                 .cumsum().fillna(0)
             )
-
-            # Per-user total span (days between first and last order).
-            user_spans = order_lvl.groupby("user_id")["days_from_start"].max()
-            user_spans.name = "user_span"
-
-            # Rank users by span (ascending) — longer-lived users get earlier
-            # start positions so their timelines fit within the window.
-            user_ranks = user_spans.rank(method="first", ascending=True) - 1
-            n_users = len(user_ranks)
-
-            # Observation window: accommodate the longest user span plus a
-            # margin proportional to the span distribution (p99 + 10%).
-            p99_span = float(user_spans.quantile(0.99))
-            observation_span = max(
-                float(user_spans.max()) + 1,
-                p99_span * 1.10 + 1,
+            df["days_from_end"] = df.groupby("user_id")["days_from_end"].transform(
+                lambda x: x.max() - x
             )
-            timeline_end = pd.Timestamp("2017-03-21")
-            timeline_start = timeline_end - pd.Timedelta(days=observation_span)
-
-            # Place each user's first order within the feasible range.
-            # Feasible range for user u: [0, observation_span - user_span[u]]
-            # Rank-based placement distributes users deterministically across
-            # this range, avoiding endpoint collisions.
-            user_starts = pd.Series(
-                (user_ranks / max(n_users - 1, 1))
-                * (observation_span - user_spans),
-                index=user_ranks.index,
+            df["event_time"] = pd.Timestamp("2017-03-21") - pd.to_timedelta(
+                df["days_from_end"], unit="D"
             )
-            user_starts_dict = user_starts.to_dict()
-
-            # Assign event_time = timeline_start + start_offset + days_from_start
-            order_lvl["event_time"] = order_lvl.apply(
-                lambda r: timeline_start + pd.Timedelta(
-                    days=user_starts_dict[r["user_id"]] + r["days_from_start"]
-                ),
-                axis=1,
-            )
-
-            if "order_id" in order_lvl.columns:
-                df = df.drop(columns=["event_time"], errors="ignore").merge(
-                    order_lvl[["user_id", "order_id", "event_time"]],
-                    on=["user_id", "order_id"], how="left",
-                )
-            else:
-                df["event_time"] = df["user_id"].map(
-                    order_lvl.set_index("user_id")["event_time"]
-                )
         else:
             df["event_time"] = pd.Timestamp("2017-03-21")
 
@@ -253,6 +161,109 @@ class InstacartAdapter(BaseDatasetAdapter):
             df["purchase_value"] = 0.0
 
         return df
+
+    def user_relative_split(
+        self, orders_df: pd.DataFrame, train_ratio: float = 0.70,
+    ) -> tuple:
+        """Split each user's order history independently by order number."""
+        train_orders = []
+        test_orders = []
+        id_col = "user_id" if "user_id" in orders_df.columns else "customer_id"
+
+        for _, user_orders in orders_df.groupby(id_col):
+            user_orders_sorted = user_orders.sort_values("order_number")
+            n = len(user_orders_sorted)
+            split_idx = max(1, int(n * train_ratio))
+            train_orders.append(user_orders_sorted.iloc[:split_idx])
+            test_orders.append(user_orders_sorted.iloc[split_idx:])
+
+        if not train_orders:
+            return pd.DataFrame(), pd.DataFrame()
+        train_df = pd.concat(train_orders, ignore_index=True)
+        test_df = (
+            pd.concat(test_orders, ignore_index=True)
+            if test_orders else pd.DataFrame(columns=orders_df.columns)
+        )
+        return train_df, test_df
+
+    def build_user_relative_modeling_data(
+        self, df: pd.DataFrame, train_ratio: float = 0.70,
+    ) -> tuple:
+        """Build user-level features and churn labels from personal cadence decay.
+
+        Users with fewer than three unique orders are excluded.  A user is labeled
+        churned when mean test-period days_since_prior_order exceeds 1.5 times
+        the mean train-period days_since_prior_order.
+        """
+        from sklearn.model_selection import train_test_split
+        from src.feature_engineering import engineer_features
+
+        required = {"customer_id", "order_number", "days_since_prior_order"}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f"Instacart user-relative split missing columns: {missing}")
+
+        order_level = (
+            df.sort_values(["customer_id", "order_number"])
+            .drop_duplicates(subset=["customer_id", "order_number"])
+            .copy()
+        )
+        counts = order_level.groupby("customer_id")["order_number"].nunique()
+        eligible_users = counts[counts >= 3].index
+        order_level = order_level[order_level["customer_id"].isin(eligible_users)].copy()
+        event_rows = df[df["customer_id"].isin(eligible_users)].copy()
+
+        label_rows = []
+        feature_rows = []
+        for user_id, user_orders in order_level.groupby("customer_id"):
+            user_orders = user_orders.sort_values("order_number")
+            split_idx = max(1, int(len(user_orders) * train_ratio))
+            train_orders = user_orders.iloc[:split_idx]
+            test_orders = user_orders.iloc[split_idx:]
+            if test_orders.empty:
+                continue
+
+            train_gap = pd.to_numeric(
+                train_orders["days_since_prior_order"], errors="coerce",
+            ).replace(0, np.nan).dropna()
+            test_gap = pd.to_numeric(
+                test_orders["days_since_prior_order"], errors="coerce",
+            ).replace(0, np.nan).dropna()
+            if train_gap.empty or test_gap.empty:
+                continue
+
+            train_mean = train_gap.mean()
+            test_mean = test_gap.mean()
+            churn = int(test_mean > 1.5 * train_mean)
+            label_rows.append({"customer_id": user_id, "churn": churn})
+            feature_rows.append(
+                event_rows[
+                    (event_rows["customer_id"] == user_id)
+                    & (event_rows["order_number"].isin(train_orders["order_number"]))
+                ]
+            )
+
+        if not label_rows or not feature_rows:
+            raise RuntimeError("No eligible Instacart users for user-relative modeling")
+
+        labels = pd.DataFrame(label_rows).drop_duplicates("customer_id")
+        feature_source = pd.concat(feature_rows, ignore_index=True)
+        snapshot = feature_source["event_time"].max() + pd.Timedelta(days=1)
+        features = engineer_features(
+            feature_source,
+            snapshot,
+            customer_ids=labels["customer_id"].tolist(),
+            available_groups=self.available_feature_groups,
+        )
+        labels = labels.set_index("customer_id").loc[features.index]
+        X_train, X_test, y_train, y_test = train_test_split(
+            features,
+            labels["churn"],
+            test_size=0.30,
+            random_state=RANDOM_SEED,
+            stratify=labels["churn"],
+        )
+        return X_train, X_test, y_train.to_frame("churn"), y_test.to_frame("churn")
 
     # ── Schema standardisation ───────────────────────────────────────
 
@@ -285,9 +296,7 @@ class InstacartAdapter(BaseDatasetAdapter):
 
     @property
     def available_feature_groups(self) -> List[str]:
-        """Instacart provides no price information (purchase_value is
-        unavailable) → monetary group is disabled (Section 5)."""
-        return ["purchase", "inactivity", "cadence"]
+        return ["purchase", "monetary", "inactivity", "cadence"]
 
     # ── Metadata ─────────────────────────────────────────────────────
 
