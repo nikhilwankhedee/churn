@@ -12,20 +12,19 @@ repeat transactions over a multi-year period.
 Data source: https://www.kaggle.com/datasets/mashlyn/online-retail-ii-uci
 """
 import os
-from typing import Any, Dict, List, Optional
-
-import numpy as np
 import pandas as pd
+import numpy as np
+from typing import Optional, List, Dict, Any
 
 from src.datasets.base import BaseDatasetAdapter
+from src.config import ON_KAGGLE, ONLINE_RETAIL_FILE
 from src.utils import get_logger
 
 logger = get_logger(__name__)
 
-FILE_2009_2010 = "online_retail_II_2009_2010.csv"
-FILE_2010_2011 = "online_retail_II_2010_2011.csv"
-FILE_XLSX = "online_retail_II.xlsx"
-FILE_XLSX_KAGGLE = "online_retail_II.xlsx"
+ONLINE_RETAIL_XLSX = "online_retail_II.xlsx"
+SHEET_2009_2010 = "Year 2009-2010"
+SHEET_2010_2011 = "Year 2010-2011"
 
 CANCELLATION_PREFIX = "C"
 
@@ -43,86 +42,30 @@ class OnlineRetailIIAdapter(BaseDatasetAdapter):
     def churn_window_days(self) -> Optional[int]:
         return 90
 
-    @property
-    def required_files(self) -> list:
-        return [FILE_2009_2010, FILE_2010_2011]
-
-    @property
-    def alternate_filenames(self) -> Dict[str, List[str]]:
-        """Kaggle ships a single ``online_retail_II.xlsx`` (two sheets) instead
-        of the two CSV files.  The resolver treats a required file as present
-        if the xlsx alternate exists."""
-        return {
-            FILE_2009_2010: [FILE_XLSX_KAGGLE],
-            FILE_2010_2011: [FILE_XLSX_KAGGLE],
-        }
-
     # ── Data loading ─────────────────────────────────────────────────
 
-    def _resolve_file(self, *candidates: str) -> Optional[str]:
-        """Return path of first existing file, or None."""
-        for name in candidates:
-            path = os.path.join(self.data_dir, name)
-            if os.path.isfile(path):
-                return path
-        return None
-
-    def _safe_read_csv(self, filepath: str, table_name: str,
-                       **kwargs) -> Optional[pd.DataFrame]:
+    def _safe_read_excel(self, filepath: str, sheet_name: str) -> Optional[pd.DataFrame]:
         if not os.path.isfile(filepath):
-            logger.warning("File not found: %s — skipping %s", filepath, table_name)
+            logger.warning("File not found: %s — skipping %s", filepath, sheet_name)
             return None
         try:
-            df = pd.read_csv(filepath, encoding="ISO-8859-1", **kwargs)
+            df = pd.read_excel(
+                filepath, sheet_name=sheet_name, engine="openpyxl",
+            )
             logger.info("Loaded %s: %d rows x %d cols",
-                         table_name, df.shape[0], df.shape[1])
+                         sheet_name, df.shape[0], df.shape[1])
             return df
         except Exception as exc:
             logger.error("Failed to load %s: %s", filepath, exc)
             return None
 
-    def _load_from_xlsx(self) -> Optional[pd.DataFrame]:
-        """Load from a single .xlsx file with two sheets (Kaggle format)."""
-        xlsx_path = self._resolve_file(FILE_XLSX, FILE_XLSX_KAGGLE)
-        if xlsx_path is None:
-            return None
-
-        try:
-            xls = pd.ExcelFile(xlsx_path)
-            sheet_names = xls.sheet_names
-            logger.info("XLSX sheets: %s", sheet_names)
-
-            frames = []
-            for sheet in sheet_names:
-                df = pd.read_excel(xlsx_path, sheet_name=sheet)
-                logger.info("Sheet '%s': %d rows x %d cols", sheet, df.shape[0], df.shape[1])
-                frames.append(df)
-
-            if not frames:
-                return None
-
-            df = pd.concat(frames, ignore_index=True)
-            logger.info("Combined from XLSX: %d rows", len(df))
-            return df
-        except Exception as exc:
-            logger.error("Failed to load XLSX %s: %s", xlsx_path, exc)
-            return None
-
     def load_raw_data(self) -> pd.DataFrame:
-        # Try XLSX first (Kaggle format)
-        df = self._load_from_xlsx()
-        if df is not None:
-            return df
-
-        # Fall back to individual CSVs
-        df_0910 = self._safe_read_csv(
-            os.path.join(self.data_dir, FILE_2009_2010),
-            "2009-2010 transactions",
+        filepath = (
+            ONLINE_RETAIL_FILE if ON_KAGGLE
+            else os.path.join(self.data_dir, ONLINE_RETAIL_XLSX)
         )
-        df_1011 = self._safe_read_csv(
-            os.path.join(self.data_dir, FILE_2010_2011),
-            "2010-2011 transactions",
-        )
+        df_0910 = self._safe_read_excel(filepath, SHEET_2009_2010)
+        df_1011 = self._safe_read_excel(filepath, SHEET_2010_2011)
 
         frames = []
         if df_0910 is not None:
@@ -132,8 +75,8 @@ class OnlineRetailIIAdapter(BaseDatasetAdapter):
 
         if not frames:
             raise FileNotFoundError(
-                f"Neither XLSX ({FILE_XLSX}) nor CSVs ({FILE_2009_2010}, {FILE_2010_2011}) "
-                f"found in {self.data_dir}"
+                f"Expected workbook {filepath} with sheets "
+                f"{SHEET_2009_2010!r} and {SHEET_2010_2011!r}"
             )
 
         df = pd.concat(frames, ignore_index=True)
@@ -171,10 +114,7 @@ class OnlineRetailIIAdapter(BaseDatasetAdapter):
 
         if "Price" in df.columns:
             df["Price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0)
-            # Zero/negative prices are invalid for monetary-value features —
-            # drop them outright (they also break log-transformed monetary
-            # features).  Section 16 of the experiment spec.
-            df = df[df["Price"] > 0].copy()
+            df = df[df["Price"] >= 0].copy()
             cap = df["Price"].quantile(0.999)
             if cap > 0 and not np.isnan(cap):
                 df["Price"] = df["Price"].clip(upper=cap)
