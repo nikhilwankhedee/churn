@@ -24,11 +24,11 @@ from src.utils import get_logger
 
 logger = get_logger(__name__)
 
-ORDERS_FILE = "instacart_orders.csv"
-PRODUCTS_FILE = "instacart_products.csv"
-AISLES_FILE = "instacart_aisles.csv"
-DEPARTMENTS_FILE = "instacart_departments.csv"
-ORDER_PRODUCTS_PRIOR = "instacart_order_products__prior.csv"
+ORDERS_FILE = "orders.csv"
+PRODUCTS_FILE = "products.csv"
+AISLES_FILE = "aisles.csv"
+DEPARTMENTS_FILE = "departments.csv"
+ORDER_PRODUCTS_PRIOR = "order_products__prior.csv"
 
 
 class InstacartAdapter(BaseDatasetAdapter):

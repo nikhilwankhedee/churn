@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from src.config import (
     DATA_DIR, ON_KAGGLE, LASTFM_PARQUET, LASTFM_PROFILE, RANDOM_SEED,
@@ -46,7 +47,25 @@ class LastFMAdapter(BaseDatasetAdapter):
             LASTFM_PROFILE if ON_KAGGLE
             else os.path.join(DATA_DIR, LOCAL_LASTFM_PROFILE)
         )
-        events = pd.read_parquet(parquet_path)
+
+        # pandas >= 2.0 requires an explicit parquet engine (pyarrow).
+        # Read in batches and keep only users with >= 50 listens so the
+        # ~19M-row frame is never fully materialised in this process.
+        pf = pq.ParquetFile(parquet_path)
+
+        # First pass: lightweight listen counts per user.
+        user_ids = pf.read(columns=["user_id"]).to_pandas()["user_id"]
+        user_counts = user_ids.value_counts()
+        eligible_users = user_counts[user_counts >= 50].index
+
+        # Second pass: materialise only eligible users' rows, batch by batch.
+        chunks = []
+        for batch in pf.iter_batches(batch_size=500_000):
+            frame = batch.to_pandas()
+            frame = frame[frame["user_id"].isin(eligible_users)]
+            chunks.append(frame)
+        events = pd.concat(chunks, ignore_index=True)
+
         profile = pd.read_csv(
             profile_path,
             sep="\t",
