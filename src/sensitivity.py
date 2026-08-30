@@ -15,9 +15,10 @@ import numpy as np
 from typing import Dict, List, Optional
 
 from src.config import (
-    RESULTS_DIR, RANDOM_SEED, SENSITIVITY_RESULTS_DIR,
+    RANDOM_SEED, SENSITIVITY_RESULTS_DIR,
     SHAP_SAMPLE_SIZE, TRAIN_SPLIT_QUANTILE,
 )
+from src.run_context import results_dir
 from src.datasets import get_dataset
 from src.churn_labeling import (
     create_churn_labels, get_train_test_cutoffs, compute_imbalance_ratio,
@@ -26,7 +27,7 @@ from src.feature_engineering import engineer_features
 from src.modeling import train_models
 from src.evaluation import evaluate_model, compute_imbalance_metrics
 from src.baselines import random_baseline
-from src.utils import ensure_dir, get_logger, set_seed, timeit
+from src.utils import get_logger, set_seed, timeit
 
 logger = get_logger(__name__)
 
@@ -63,9 +64,7 @@ def run_sensitivity_analysis(
 
     set_seed(RANDOM_SEED)
     adapter = get_dataset(dataset)
-    output_dir = ensure_dir(
-        os.path.join(RESULTS_DIR, SENSITIVITY_RESULTS_DIR)
-    )
+    output_dir = results_dir(SENSITIVITY_RESULTS_DIR)
 
     # ── Load data once, reuse across windows ─────────────────────────
     logger.info("Sensitivity | Loading data for '%s' …", dataset)
@@ -220,9 +219,7 @@ def run_sensitivity_all_datasets() -> pd.DataFrame:
 
     if all_results:
         combined = pd.concat(all_results, ignore_index=True)
-        output_dir = ensure_dir(
-            os.path.join(RESULTS_DIR, SENSITIVITY_RESULTS_DIR)
-        )
+        output_dir = results_dir(SENSITIVITY_RESULTS_DIR)
         path = os.path.join(output_dir, 'all_datasets_sensitivity.csv')
         combined.to_csv(path, index=False)
         logger.info(

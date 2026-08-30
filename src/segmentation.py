@@ -10,14 +10,15 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 
-from src.config import N_CLUSTERS, RANDOM_SEED, MODELS_DIR
+from src.config import N_CLUSTERS, RANDOM_SEED
+from src.run_context import models_dir
 from src.utils import get_logger, ensure_dir
 
 logger = get_logger(__name__)
 
 
 def segment_customers(features: pd.DataFrame) -> pd.DataFrame:
-    out_dir = ensure_dir(os.path.join(MODELS_DIR, 'segmentation'))
+    out_dir = models_dir('segmentation')
     X = features.select_dtypes(include=[np.number]).copy()
     n = len(X)
 

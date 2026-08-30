@@ -12,14 +12,16 @@ import pandas as pd
 import numpy as np
 from typing import Any, Dict, Optional, List
 
-from src.config import MODELS_DIR, PROCESSED_DIR, RESULTS_DIR
-from src.utils import ensure_dir, get_logger
+from src.run_context import (
+    models_dir, processed_dir, results_dir, master_results_path,
+)
+from src.utils import get_logger
 
 logger = get_logger(__name__)
 
 
 def save_models(models: Dict[str, Any], suffix: str = '') -> None:
-    d = ensure_dir(MODELS_DIR)
+    d = models_dir()
     for name, model in models.items():
         path = os.path.join(d, f'{name}{suffix}.joblib')
         joblib.dump(model, path)
@@ -31,7 +33,7 @@ def save_processed_data(
     train_y: pd.DataFrame, test_y: pd.DataFrame,
     suffix: str = '',
 ) -> None:
-    d = ensure_dir(PROCESSED_DIR)
+    d = processed_dir()
     train_X.to_csv(os.path.join(d, f'train_features{suffix}.csv'), index=True)
     test_X.to_csv(os.path.join(d, f'test_features{suffix}.csv'), index=True)
     train_y.to_csv(os.path.join(d, f'train_labels{suffix}.csv'), index=True)
@@ -41,8 +43,7 @@ def save_processed_data(
 
 def save_evaluation_table(metrics_df: pd.DataFrame,
                           filename: str = 'model_metrics.csv') -> None:
-    path = os.path.join(ensure_dir(os.path.join(RESULTS_DIR, 'model_metrics')),
-                        filename)
+    path = os.path.join(results_dir('model_metrics'), filename)
     metrics_df.to_csv(path, index=False)
     logger.info("Evaluation table saved: %s", path)
 
@@ -50,7 +51,7 @@ def save_evaluation_table(metrics_df: pd.DataFrame,
 def save_shap_values(
     shap_values: Any, feature_names: list, model_name: str, suffix: str = '',
 ) -> None:
-    d = ensure_dir(os.path.join(RESULTS_DIR, 'shap_values'))
+    d = results_dir('shap_values')
     path = os.path.join(d, f'{model_name}_shap_values{suffix}.csv')
     if shap_values is None:
         logger.warning("No SHAP values to save for %s", model_name)
@@ -69,14 +70,14 @@ def save_shap_values(
 
 
 def save_risk_scores(risk_df: pd.DataFrame, model_name: str, suffix: str = '') -> None:
-    d = ensure_dir(os.path.join(RESULTS_DIR, 'risk_scoring'))
+    d = results_dir('risk_scoring')
     path = os.path.join(d, f'{model_name}_risk_scores{suffix}.csv')
     risk_df.to_csv(path, index=False)
     logger.info("Risk scores saved: %s", path)
 
 
 def save_data_quality_report(report_dict: dict, suffix: str = '') -> None:
-    d = ensure_dir(os.path.join(RESULTS_DIR, 'data_quality'))
+    d = results_dir('data_quality')
     txt_path = os.path.join(d, f'data_quality_report{suffix}.txt')
     with open(txt_path, 'w') as f:
         for k, v in report_dict.items():
@@ -87,7 +88,7 @@ def save_data_quality_report(report_dict: dict, suffix: str = '') -> None:
 
 
 def save_experiment_metadata(metadata: dict, suffix: str = '') -> None:
-    d = ensure_dir(os.path.join(RESULTS_DIR, 'experiments'))
+    d = results_dir('experiments')
     log_file = os.path.join(d, f'experiment_log{suffix}.csv')
     df = pd.DataFrame([metadata])
     if os.path.exists(log_file):
@@ -108,7 +109,8 @@ def append_to_master_results(
     """Append a dataset's results to the cross-dataset master table.
 
     The master table is stored at:
-        results/cross_dataset/master_results.csv
+        results/cross_dataset/master_results_<mode>.csv
+    (mode is "original" or "smote", so the two sweeps never collide).
 
     This enables direct cross-dataset comparison for the research paper.
 
@@ -117,8 +119,7 @@ def append_to_master_results(
     """
     from src.validators import validate_master_results_entry
 
-    d = ensure_dir(os.path.join(RESULTS_DIR, 'cross_dataset'))
-    path = os.path.join(d, 'master_results.csv')
+    path = master_results_path()
 
     rows = []
     for _, row in metrics.iterrows():

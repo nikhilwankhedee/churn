@@ -17,7 +17,8 @@ from typing import Dict, Optional, Tuple
 from sklearn.metrics import (
     RocCurveDisplay, ConfusionMatrixDisplay, PrecisionRecallDisplay,
 )
-from src.config import FIGURES_DIR, SAVEFIG_DPI, FONT_SIZE
+from src.config import SAVEFIG_DPI, FONT_SIZE
+from src.run_context import figures_dir
 from src.utils import get_logger, ensure_dir
 
 logger = get_logger(__name__)
@@ -55,7 +56,7 @@ def plot_roc_curves(prob_dict: Dict[str, np.ndarray],
         RocCurveDisplay.from_predictions(y_test, probs, name=name, ax=ax)
     ax.plot([0, 1], [0, 1], 'k--', alpha=0.4)
     ax.set_title('ROC Curves')
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
+    _save_and_close(fig, os.path.join(figures_dir('model_evaluation'),
                                       f'roc_curves{suffix}.png'))
     logger.info("ROC curves saved")
 
@@ -70,7 +71,7 @@ def plot_pr_curves(pr_data: Dict[str, Tuple[np.ndarray, np.ndarray, float]],
     ax.set_ylabel('Precision')
     ax.set_title('Precision-Recall Curves')
     ax.legend(loc='best')
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
+    _save_and_close(fig, os.path.join(figures_dir('model_evaluation'),
                                       f'pr_curves{suffix}.png'))
     logger.info("PR curves saved")
 
@@ -82,7 +83,7 @@ def plot_confusion_matrices(cms: Dict[str, np.ndarray], suffix: str = '') -> Non
         ConfusionMatrixDisplay(cm, display_labels=['Retained', 'Churned']).plot(
             ax=ax, cmap='Blues', values_format='d')
         ax.set_title(f'Confusion Matrix — {name}')
-        _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
+        _save_and_close(fig, os.path.join(figures_dir('model_evaluation'),
                                           f'confusion_{name}{suffix}.png'))
     logger.info("Confusion matrices saved")
 
@@ -91,7 +92,7 @@ def plot_confusion_matrices(cms: Dict[str, np.ndarray], suffix: str = '') -> Non
 def plot_feature_importance(imp_df: pd.DataFrame, title: str = '',
                             save_path: str = None, top_n: int = 20) -> None:
     if save_path is None:
-        save_path = os.path.join(FIGURES_DIR, 'model_evaluation',
+        save_path = os.path.join(figures_dir('model_evaluation'),
                                  'feature_importance.png')
     imp = imp_df.head(top_n)
     fig, ax = plt.subplots(figsize=(10, max(6, len(imp) * 0.35)))
@@ -109,7 +110,7 @@ def plot_correlation_heatmap(features: pd.DataFrame, suffix: str = '') -> None:
     sns.heatmap(corr, mask=mask, annot=False, cmap='RdBu_r', center=0,
                 square=True, linewidths=0.5, ax=ax)
     ax.set_title('Feature Correlation Matrix')
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'correlation_analysis',
+    _save_and_close(fig, os.path.join(figures_dir('correlation_analysis'),
                                       f'correlation_heatmap{suffix}.png'))
     logger.info("Correlation heatmap saved")
 
@@ -127,7 +128,7 @@ def plot_segmentation(seg_df: pd.DataFrame, suffix: str = '') -> None:
                c='black', marker='X', s=120, label='Centroid')
     ax.set_title('Customer Segments (PCA Projection)')
     ax.legend()
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'segmentation',
+    _save_and_close(fig, os.path.join(figures_dir('segmentation'),
                                       f'segments_scatter{suffix}.png'))
     logger.info("Segmentation plot saved")
 
@@ -143,7 +144,7 @@ def plot_churn_distribution(labels: pd.Series, suffix: str = '') -> None:
                 f'{v:.1f}%', ha='center', fontsize=FONT_SIZE)
     ax.set_ylabel('Percentage (%)')
     ax.set_title('Churn Distribution')
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'churn_analysis',
+    _save_and_close(fig, os.path.join(figures_dir('churn_analysis'),
                                       f'churn_distribution{suffix}.png'))
     logger.info("Churn distribution saved")
 
@@ -159,7 +160,7 @@ def plot_threshold_analysis(thresh_df: pd.DataFrame, model_name: str,
     ax.set_ylabel('Score')
     ax.set_title(f'{model_name} — Threshold Analysis')
     ax.legend(loc='best')
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
+    _save_and_close(fig, os.path.join(figures_dir('model_evaluation'),
                                       f'{model_name}_threshold{suffix}.png'))
     logger.info("Threshold analysis saved for %s", model_name)
 
@@ -177,7 +178,7 @@ def plot_ablation_results(ablation_df: pd.DataFrame,
     ax.set_title('Ablation Study')
     ax.legend(loc='best')
     fig.tight_layout()
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'model_evaluation',
+    _save_and_close(fig, os.path.join(figures_dir('model_evaluation'),
                                       f'ablation_results{suffix}.png'))
     logger.info("Ablation plot saved")
 
@@ -200,7 +201,7 @@ def plot_behavioral_insights(features: pd.DataFrame,
                     hue='Churn', legend=False)
         ax.set_title(feat.replace('_', ' ').title())
     fig.suptitle('Behavioural Comparison by Churn Status', fontsize=FONT_SIZE + 2)
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'behavioral_insights',
+    _save_and_close(fig, os.path.join(figures_dir('behavioral_insights'),
                                       f'behavior_boxplots{suffix}.png'))
     logger.info("Behavioural insights saved")
 
@@ -213,6 +214,6 @@ def plot_delivery_delay_distribution(features: pd.DataFrame, suffix: str = '') -
     sns.histplot(features['avg_delivery_delay_days'], bins=50,
                  kde=True, ax=ax)
     ax.set_title('Distribution of Avg Delivery Delay')
-    _save_and_close(fig, os.path.join(FIGURES_DIR, 'dataset_analysis',
+    _save_and_close(fig, os.path.join(figures_dir('dataset_analysis'),
                                       f'delivery_delay_dist{suffix}.png'))
     logger.info("Delivery delay histogram saved")

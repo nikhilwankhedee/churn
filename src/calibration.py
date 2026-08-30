@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
 from sklearn.calibration import calibration_curve
 from sklearn.utils import resample
 
-from src.config import FIGURES_DIR, CALIBRATION_N_BINS, CALIBRATION_N_BOOTSTRAP
+from src.config import CALIBRATION_N_BINS, CALIBRATION_N_BOOTSTRAP
+from src.run_context import figures_dir
 from src.utils import get_logger, ensure_dir
 
 logger = get_logger(__name__)
@@ -27,9 +28,9 @@ def plot_calibration_curves(
     save_path: str = None,
     suffix: str = '',
 ) -> None:
-    ensure_dir(os.path.join(FIGURES_DIR, 'calibration'))
+    figures_dir('calibration')
     if save_path is None:
-        save_path = os.path.join(FIGURES_DIR, 'calibration',
+        save_path = os.path.join(figures_dir('calibration'),
                                  f'calibration_curves{suffix}.png')
 
     fig, ax = plt.subplots(figsize=(8, 6))

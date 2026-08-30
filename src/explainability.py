@@ -25,7 +25,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from typing import Optional, Tuple, Any
 
-from src.config import FIGURES_DIR, SHAP_SAMPLE_SIZE, RANDOM_SEED
+from src.config import SHAP_SAMPLE_SIZE, RANDOM_SEED
+from src.run_context import figures_dir
 from src.utils import get_logger, ensure_dir
 
 logger = get_logger(__name__)
@@ -211,7 +212,7 @@ def shap_analysis(
         )
         return None, None
 
-    save_dir = ensure_dir(os.path.join(FIGURES_DIR, 'shap_analysis'))
+    save_dir = figures_dir('shap_analysis')
     X_s = X_sample.copy()
     n_features = X_s.shape[1]
 

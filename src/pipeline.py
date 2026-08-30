@@ -52,10 +52,13 @@ except ImportError:
     _SMOTE_AVAILABLE = False
 
 from src.config import (
-    FIGURES_DIR, RESULTS_DIR, MODELS_DIR, PROCESSED_DIR,
     FIGURE_SUBDIRS, RESULT_SUBDIRS,
     TRAIN_SPLIT_QUANTILE, RANDOM_SEED, PREDICTION_WINDOW_DAYS,
     SHAP_SAMPLE_SIZE, SENSITIVITY_ENABLED, CALIBRATION_N_BINS,
+)
+from src.run_context import (
+    figures_dir, models_dir, processed_dir, results_dir,
+    master_results_path,
 )
 from src.utils import (
     set_seed, ensure_dir, get_logger, timeit,
@@ -102,12 +105,15 @@ set_seed(RANDOM_SEED)
 
 
 def _create_directories() -> None:
-    for d in [FIGURES_DIR, RESULTS_DIR, MODELS_DIR, PROCESSED_DIR]:
-        ensure_dir(d)
+    from src.run_context import (
+        figures_dir, results_dir, models_dir, processed_dir,
+    )
+    models_dir()
+    processed_dir()
     for sub in FIGURE_SUBDIRS:
-        ensure_dir(os.path.join(FIGURES_DIR, sub))
+        figures_dir(sub)
     for sub in RESULT_SUBDIRS:
-        ensure_dir(os.path.join(RESULTS_DIR, sub))
+        results_dir(sub)
 
 
 def _compute_dominant_group(
@@ -171,6 +177,10 @@ def run_pipeline(
     start_time = datetime.datetime.utcnow()
     logger.info("=" * 60)
     mode_suffix = '_smote' if use_smote else ''
+    from src.run_context import (
+        set_run_scope, results_dir, figures_dir, master_results_path,
+    )
+    set_run_scope(dataset, use_smote)
     logger.info("Behavioural Churn Prediction Pipeline — dataset: %s", dataset)
     logger.info("Training mode: %s", "smote" if use_smote else "original")
     logger.info("=" * 60)
@@ -459,7 +469,7 @@ def run_pipeline(
                     imp_df,
                     title=f'{name} — Feature Importance',
                     save_path=os.path.join(
-                        FIGURES_DIR, 'model_evaluation',
+                        figures_dir('model_evaluation'),
                         f'{name}_importance{mode_suffix}.png',
                     ),
                 )
@@ -518,7 +528,7 @@ def run_pipeline(
     try:
         stat_results = feature_distribution_tests(X_train, y_train)
         stat_results.to_csv(
-            os.path.join(RESULTS_DIR, 'statistical_tests',
+            os.path.join(results_dir('statistical_tests'),
                           f'feature_tests{mode_suffix}.csv'),
             index=False,
         )
@@ -530,7 +540,7 @@ def run_pipeline(
     try:
         ablation_df = run_ablation(X_train, y_train)
         ablation_df.to_csv(
-            os.path.join(RESULTS_DIR, 'ablation',
+            os.path.join(results_dir('ablation'),
                           f'ablation_results{mode_suffix}.csv'),
             index=False,
         )
@@ -584,7 +594,7 @@ def run_pipeline(
             y_proba_best = best_model.predict_proba(X_test)[:, 1]
             err = analyze_errors(X_test, y_test, y_pred_best, y_proba_best)
             pd.DataFrame(err).transpose().to_csv(
-                os.path.join(RESULTS_DIR, 'failure_analysis',
+                os.path.join(results_dir('failure_analysis'),
                               f'error_groups{mode_suffix}.csv'),
             )
             fp_mask = (y_test == 0) & (y_pred_best == 1)
@@ -594,7 +604,7 @@ def run_pipeline(
             comp = behavioral_comparison(fp_feats, fn_feats)
             if not comp.empty:
                 comp.to_csv(
-                    os.path.join(RESULTS_DIR, 'failure_analysis',
+                    os.path.join(results_dir('failure_analysis'),
                                   f'fp_fn_comparison{mode_suffix}.csv'),
                 )
         except Exception as exc:
@@ -603,8 +613,8 @@ def run_pipeline(
     # ── Output validation (Layer 3) ────────────────────────────────
     logger.info("── Layer 3: Output validation ──")
     output_report = validate_outputs(
-        results_dir=RESULTS_DIR,
-        figures_dir=FIGURES_DIR,
+        results_dir=results_dir(),
+        figures_dir=figures_dir(),
         eval_df=eval_df,
         y_proba=prob_dict,
         dataset_name=dataset,
@@ -629,9 +639,7 @@ def run_pipeline(
     # ── Cross-dataset validation (Layer 4) ──────────────────────────
     logger.info("── Layer 4: Cross-dataset validation ──")
     try:
-        master_path = os.path.join(
-            RESULTS_DIR, 'cross_dataset', 'master_results.csv',
-        )
+        master_path = master_results_path()
         validate_cross_dataset_behavior(master_path)
     except Exception as exc:
         logger.warning("Cross-dataset validation failed: %s", exc)
@@ -787,6 +795,7 @@ def _extract_model_metric(metrics_df: Optional[pd.DataFrame],
 
 def _plot_smote_comparison_figure(summary: pd.DataFrame) -> None:
     """Side-by-side bar chart of Original vs SMOTE mean ROC-AUC per dataset."""
+    from src.config import RESULTS_DIR
     d = ensure_dir(os.path.join(RESULTS_DIR, 'cross_dataset'))
     path = os.path.join(d, 'smote_comparison_figure.png')
 
@@ -819,6 +828,7 @@ def _plot_calibration_comparison(
     curves are overlaid so the effect of SMOTE on probability calibration can
     be inspected per dataset.
     """
+    from src.config import FIGURES_DIR
     d = ensure_dir(os.path.join(FIGURES_DIR, 'calibration'))
     path = os.path.join(d, f'{dataset}_calibration_comparison.png')
     if not orig_prob_dict or not smote_prob_dict:
@@ -973,6 +983,7 @@ def run_smote_comparison(
                                ds, exc)
 
     # ── Cross-dataset comparison table ──────────────────────────────
+    from src.config import RESULTS_DIR
     d = ensure_dir(os.path.join(RESULTS_DIR, 'cross_dataset'))
     cmp_df = pd.DataFrame(rows)
     cmp_path = os.path.join(d, 'smote_comparison_all_datasets.csv')
