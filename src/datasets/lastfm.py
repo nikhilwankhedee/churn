@@ -1,35 +1,23 @@
 """
-Last.fm 1K Users dataset adapter.
+Last.fm music streaming dataset adapter.
 
-Ecosystem type: media_streaming
-Churn definition: 30-day inactivity
-
-Models music listening behavior — engagement and listening diversity.
-SVM uses a stratified subset of at most 5,000 users.
-
-Listening events are mapped to "purchase" events so the generic feature
-engineering module can compute cadence and recency features.  The
-standardized schema provides artist as product_id, enabling unique artist
-counting and diversity computation through the existing pipeline.
-
-Data sources:
-- lastfm-dataset-1k.snappy.parquet (primary listening data)
-- userid-profile.tsv (user profiles)
+Ecosystem type: music_streaming
+Churn definition: user-relative listening-frequency degradation.
 """
 import os
-import pandas as pd
-import numpy as np
 from typing import Optional, List, Dict, Any
 
+import numpy as np
+import pandas as pd
+
+from src.config import (
+    DATA_DIR, ON_KAGGLE, LASTFM_PARQUET, LASTFM_PROFILE, RANDOM_SEED,
+)
 from src.datasets.base import BaseDatasetAdapter
-from src.utils import get_logger
 
-logger = get_logger(__name__)
 
-LISTENING_FILE = "lastfm-dataset-1k.snappy.parquet"
-PROFILE_FILE = "userid-profile.tsv"
-
-SVM_MAX_USERS = 5000
+LOCAL_LASTFM_PARQUET = "lastfm-dataset-1k.snappy.parquet"
+LOCAL_LASTFM_PROFILE = "userid-profile.tsv"
 
 
 class LastFMAdapter(BaseDatasetAdapter):
@@ -39,135 +27,140 @@ class LastFMAdapter(BaseDatasetAdapter):
 
     @property
     def ecosystem_type(self) -> str:
-        return "media_streaming"
+        return "music_streaming"
 
     @property
     def churn_window_days(self) -> Optional[int]:
-        return 30
+        return 90
 
     @property
-    def required_files(self) -> list:
-        return [LISTENING_FILE]
+    def uses_user_relative_churn_label(self) -> bool:
+        return True
 
-    def load_raw_data(self) -> pd.DataFrame:
-        listening_path = os.path.join(self.data_dir, LISTENING_FILE)
-        if not os.path.isfile(listening_path):
-            raise FileNotFoundError(
-                f"Required file {LISTENING_FILE} not found in {self.data_dir}"
-            )
-
-        listening = pd.read_parquet(listening_path)
-        logger.info(
-            "Loaded listening data: %d rows x %d cols",
-            listening.shape[0], listening.shape[1],
+    def load_raw_data(self):
+        parquet_path = (
+            LASTFM_PARQUET if ON_KAGGLE
+            else os.path.join(DATA_DIR, LOCAL_LASTFM_PARQUET)
         )
+        profile_path = (
+            LASTFM_PROFILE if ON_KAGGLE
+            else os.path.join(DATA_DIR, LOCAL_LASTFM_PROFILE)
+        )
+        events = pd.read_parquet(parquet_path)
+        profile = pd.read_csv(
+            profile_path,
+            sep="\t",
+            header=None,
+            names=["user_id", "gender", "age", "country", "signup"],
+        )
+        return events, profile
 
-        profile_path = os.path.join(self.data_dir, PROFILE_FILE)
-        if os.path.isfile(profile_path):
-            profile = pd.read_csv(
-                profile_path,
-                sep='\t',
-                header=None,
-                names=['user_id', 'gender', 'age', 'country', 'signup'],
-            )
-            listening = listening.merge(
-                profile,
-                on='user_id',
-                how='left',
-            )
-            logger.info(
-                "Merged with profiles: %d rows",
-                listening.shape[0],
-            )
-
-        return listening
-
-    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
-
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            before = len(df)
-            df = df.dropna(subset=['timestamp'])
-            dropped = before - len(df)
-            if dropped:
-                logger.info("Dropped %d rows with null timestamp", dropped)
-
-        if 'user_id' in df.columns:
-            df = df.dropna(subset=['user_id'])
-
-        if 'artist' in df.columns:
-            df['artist'] = df['artist'].astype(str).str.strip()
-
-        if 'track' in df.columns:
-            df['track'] = df['track'].astype(str).str.strip()
-
+    def preprocess(self, data) -> pd.DataFrame:
+        events, profile = data
+        df = events.merge(profile, on="user_id", how="left")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        df = df.dropna(subset=["user_id", "timestamp"]).copy()
         return df
 
     def standardize_schema(self, df: pd.DataFrame) -> pd.DataFrame:
-        mapping = {
-            'user_id': 'customer_id',
-            'timestamp': 'event_time',
-            'artist': 'product_id',
-        }
-        df = df.rename(columns=mapping, errors='ignore')
-
-        df['event_type'] = 'purchase'
-
-        df['transaction_value'] = 0.0
-
-        if 'review_score' not in df.columns:
-            df['review_score'] = 0.0
-
-        if 'payment_type' not in df.columns:
-            df['payment_type'] = 'unknown'
-
-        df['delivery_delay'] = 0.0
-
-        if 'session_id' not in df.columns:
-            df['session_id'] = 'unknown'
-
-        if 'track' in df.columns:
-            df['engagement_signal'] = df['track'].apply(
-                lambda x: 1 if pd.notna(x) else 0
-            )
-        else:
-            df['engagement_signal'] = 1.0
-
-        logger.info(
-            "Standardised schema — columns: %s", list(df.columns)
-        )
+        df = df.rename(columns={
+            "user_id": "customer_id",
+            "timestamp": "event_time",
+            "artist_name": "product_id",
+        })
+        df["event_type"] = "listen"
+        df["transaction_value"] = 0.0
+        df["review_score"] = 0.0
+        df["payment_type"] = "unknown"
+        df["delivery_delay"] = 0.0
+        df["session_id"] = "unknown"
         return df
 
     @property
     def available_feature_groups(self) -> List[str]:
-        """Listening behaviour is the core signal (Section 17); purchase
-        cadence and inactivity complement it."""
-        return ["listening", "purchase", "inactivity", "cadence"]
+        return ["inactivity", "engagement", "cadence"]
 
     @property
     def metadata(self) -> Dict[str, Any]:
         return {
             "dataset_name": "lastfm",
-            "ecosystem_type": "media_streaming",
-            "citation": (
-                "Last.fm 1K Users Dataset. "
-                "https://www.kaggle.com/datasets/rawanalashraf/lastfm-dataset"
-            ),
-            "source_url": "https://www.kaggle.com/datasets/rawanalashraf/lastfm-dataset",
-            "n_customers_approx": 1_000,
-            "n_events_approx": 17_000_000,
-            "churn_window_days": 30,
-            "churn_justification": (
-                "30 days — music streaming has high daily engagement; "
-                "30 days of inactivity indicates genuine disengagement."
-            ),
+            "ecosystem_type": "music_streaming",
+            "citation": "",
+            "source_url": LASTFM_PARQUET if ON_KAGGLE else "",
+            "n_customers_approx": None,
+            "n_events_approx": None,
+            "churn_window_days": 90,
             "uses_native_churn_label": False,
             "available_feature_groups": self.available_feature_groups,
-            "svm_max_users": SVM_MAX_USERS,
-            "feature_mapping": (
-                "Listening events mapped to 'purchase' events for generic "
-                "feature engineering. Artists mapped to 'product_id' for "
-                "unique artist counting and diversity computation."
-            ),
         }
+
+    def build_user_relative_modeling_data(
+        self, df: pd.DataFrame, train_ratio: float = 0.70,
+    ) -> tuple:
+        """Build Last.fm features and labels from personal listening decay."""
+        from sklearn.model_selection import train_test_split
+
+        labels = []
+        features = []
+        for user_id, user_df in df.groupby("customer_id"):
+            user_df = user_df.sort_values("event_time")
+            if len(user_df) < 50:
+                continue
+
+            split_idx = max(1, int(len(user_df) * train_ratio))
+            obs = user_df.iloc[:split_idx]
+            fut = user_df.iloc[split_idx:]
+            if obs.empty or fut.empty:
+                continue
+
+            obs_days = max(
+                1, (obs["event_time"].max() - obs["event_time"].min()).days + 1,
+            )
+            fut_days = max(
+                1, (fut["event_time"].max() - fut["event_time"].min()).days + 1,
+            )
+            obs_mean = len(obs) / obs_days
+            fut_mean = len(fut) / fut_days
+            churn = int(fut_mean < 0.5 * obs_mean)
+
+            active_days = obs["event_time"].dt.date.nunique()
+            total_listens = len(obs)
+            unique_artists = obs["product_id"].nunique() if "product_id" in obs else 0
+            track_col = "track_name" if "track_name" in obs.columns else None
+            unique_tracks = obs[track_col].nunique() if track_col else 0
+            listens_by_day = obs.groupby(obs["event_time"].dt.date).size()
+            gaps = (
+                obs["event_time"].sort_values().diff().dt.total_seconds()
+                .dropna() / 86400.0
+            )
+            max_gap = float(gaps.max()) if not gaps.empty else 0.0
+
+            features.append({
+                "customer_id": user_id,
+                "total_listens": total_listens,
+                "unique_artists": unique_artists,
+                "unique_tracks": unique_tracks,
+                "active_days": active_days,
+                "avg_listens_per_day": total_listens / max(active_days, 1),
+                "days_since_last_listen": (
+                    obs["event_time"].max() - obs["event_time"].iloc[-1]
+                ).days,
+                "max_gap_between_sessions": max_gap,
+                "listening_frequency": float(listens_by_day.mean()),
+                "artist_diversity_ratio": unique_artists / max(total_listens, 1),
+            })
+            labels.append({"customer_id": user_id, "churn": churn})
+
+        if not features:
+            raise RuntimeError("No eligible Last.fm users after minimum-listen filtering")
+
+        X = pd.DataFrame(features).set_index("customer_id").fillna(0.0)
+        y = pd.DataFrame(labels).set_index("customer_id").loc[X.index, "churn"]
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.30,
+            random_state=RANDOM_SEED,
+            stratify=y,
+        )
+        return X_train, X_test, y_train.to_frame("churn"), y_test.to_frame("churn")
