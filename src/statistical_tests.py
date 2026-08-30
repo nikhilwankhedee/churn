@@ -28,21 +28,21 @@ except ImportError:
         reject[sorted_idx[:max_k]] = True
         return reject
 
-try:
-    import pingouin as pg
-except ImportError:
-    pg = None
-    logger.info("pingouin not available — using pure-numpy effect size")
-
 
 def _cliffs_delta(x, y):
+    """Cliff's delta in O((nx + ny) log(ny)) — vectorised, no n x n matrix.
+
+    Equivalent to P(x > y) - P(x < y); ties contribute 0.  The naive
+    pairwise sum is O(nx*ny) and hangs (or OOMs) on large cohorts.
+    """
     nx, ny = len(x), len(y)
     if nx == 0 or ny == 0:
         return 0.0
-    more = 0
-    for xi in x:
-        more += int((y < xi).sum()) - int((y > xi).sum())
-    return more / (nx * ny)
+    x_arr = np.asarray(x)
+    y_sorted = np.sort(np.asarray(y))
+    n_less = np.searchsorted(y_sorted, x_arr, side='left')
+    n_greater = ny - np.searchsorted(y_sorted, x_arr, side='right')
+    return float((n_less.sum() - n_greater.sum()) / (nx * ny))
 
 
 def feature_distribution_tests(
@@ -60,13 +60,7 @@ def feature_distribution_tests(
             _, p_val = mannwhitneyu(g0, g1, alternative='two-sided')
         except Exception:
             continue
-        if pg is not None:
-            try:
-                eff = pg.compute_effsize(g1, g0, eftype='cliffs')
-            except Exception:
-                eff = _cliffs_delta(g1.values, g0.values)
-        else:
-            eff = _cliffs_delta(g1.values, g0.values)
+        eff = _cliffs_delta(g1.values, g0.values)
 
         results.append({
             'feature': col,
