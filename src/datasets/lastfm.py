@@ -75,11 +75,12 @@ class LastFMAdapter(BaseDatasetAdapter):
             header=None,
             names=["user_id", "gender", "age", "country", "signup"],
         )
-        return events, profile
+        # Merge here so `load_raw_data` returns a single DataFrame (the pipeline
+        # contract). preprocess() only applies lightweight post-processing.
+        return events.merge(profile, on="user_id", how="left")
 
     def preprocess(self, data) -> pd.DataFrame:
-        events, profile = data
-        df = events.merge(profile, on="user_id", how="left")
+        df = data
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         df = df.dropna(subset=["user_id", "timestamp"]).copy()
         return df
