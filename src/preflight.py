@@ -39,6 +39,7 @@ from src.config import (
     ON_KAGGLE, PROJECT_ROOT, TRAIN_SPLIT_QUANTILE,
     OLIST_DIR, RETAILROCKET_EVENTS, INSTACART_DIR,
     LASTFM_PARQUET, LASTFM_PROFILE, CREDIT_CARD_FILE, TELCO_FILE,
+    REES46_MULTICATEGORY_DIR, REES46_MULTICATEGORY_FILES,
     PREDICTION_WINDOW_DAYS,
 )
 from src.datasets import get_dataset
@@ -52,6 +53,10 @@ PASS, FAIL, NA = 'PASS', 'FAIL', 'NA'
 USER_DISJOINT_DATASETS = ('olist', 'retailrocket')
 # Datasets whose ablation is being fixed (native predictors → real columns).
 ABLATION_FIX_DATASETS = ('credit_card', 'telco')
+# Datasets that run the global temporal inactivity split and must be deep-checked
+# for metadata: data span supporting the label window, event-type coverage, and
+# the absence of native-label columns (rees46 temporal experiment).
+TEMPORAL_VALIDITY_DATASETS = ('rees46',)
 
 
 def _expected_input_files(dataset: str):
@@ -68,6 +73,13 @@ def _expected_input_files(dataset: str):
         ]
     if dataset == 'retailrocket':
         return [('events', RETAILROCKET_EVENTS)]
+    if dataset == 'rees46':
+        # REES46 temporal experiment requires the raw event-level multi-category
+        # monthly files. At least one monthly file must be present.
+        return [
+            (fname, os.path.join(REES46_MULTICATEGORY_DIR, fname))
+            for fname in REES46_MULTICATEGORY_FILES
+        ]
     if dataset == 'instacart':
         return [('dir', INSTACART_DIR)]
     if dataset == 'lastfm':
@@ -256,6 +268,87 @@ def _check_ablation_groups(dataset: str) -> list:
     return rows
 
 
+def _check_temporal_validity(dataset: str) -> list:
+    """Deep-check a dataset that uses the global temporal inactivity split.
+
+    Verifies, without building the full feature matrix:
+      - both train/test 90-day label windows are fully observed by the data span
+        (otherwise inactivity labels are truncated / biased)
+      - the raw data carries real timestamps and the expected event types
+      - no native target_event / pre-aggregated churn column leaks into features
+      - the churn window used matches the adapter's configured 90 days
+    """
+    from src.config import TRAIN_SPLIT_QUANTILE, PREDICTION_WINDOW_DAYS
+    from src.churn_labeling import get_train_test_cutoffs
+    adapter = get_dataset(dataset)
+    base = {'stage': 'temporal', 'dataset': dataset}
+    rows = []
+
+    try:
+        df = adapter.load_raw_data()
+        df = adapter.preprocess(df)
+        df = adapter.standardize_schema(df)
+    except Exception as exc:
+        rows.append({
+            **base, 'check': 'load',
+            'status': FAIL, 'details': f'{type(exc).__name__}: {exc}',
+        })
+        return rows
+
+    def add(check, status, details):
+        rows.append({**base, 'check': check, 'status': status,
+                     'details': details})
+
+    # Data span + label-window observation.
+    ev = df['event_time']
+    span_days = (ev.max() - ev.min()).days
+    add('data_span', PASS if span_days > 0 else FAIL,
+        f'{span_days} days ({ev.min().date()} .. {ev.max().date()})')
+
+    window = adapter.churn_window_days or PREDICTION_WINDOW_DAYS
+    train_cutoff, test_cutoff = get_train_test_cutoffs(
+        df, TRAIN_SPLIT_QUANTILE, window,
+    )
+    max_date = ev.max()
+    train_obs = max_date >= train_cutoff + pd.Timedelta(days=window)
+    test_obs = max_date >= test_cutoff + pd.Timedelta(days=window)
+    add('train_label_window_observed',
+        PASS if train_obs else FAIL,
+        f'train cutoff {train_cutoff.date()} + {window}d'
+        f' -> need {max_date.date()}; present {train_obs}')
+    add('test_label_window_observed',
+        PASS if test_obs else FAIL,
+        f'test cutoff {test_cutoff.date()} + {window}d'
+        f' -> need {max_date.date()}; present {test_obs}')
+    add('churn_window', PASS if window == 90 else FAIL,
+        f'configured {window} days (temporal experiment uses 90)')
+
+    # Event-type coverage.
+    if 'event_type' in df.columns:
+        types = set(df['event_type'].dropna().unique())
+        expected = {'view', 'cart_add', 'purchase'}
+        missing = expected - types
+        add('event_type_coverage',
+            PASS if not missing else FAIL,
+            f'present {sorted(types)} | missing {sorted(missing) or "none"}')
+    else:
+        add('event_type_coverage', FAIL, 'no event_type column')
+
+    # Native-label pollution check on the standardised schema.
+    leaked = {
+        c for c in df.columns
+        if c.lower() in {'target_event', 'churn', 'target', 'customer_churn'}
+    }
+    add('native_label_columns_absent', PASS if not leaked else FAIL,
+        f'leaked: {sorted(leaked) or "none"}')
+
+    add('uses_native_churn_label', PASS if not adapter.uses_native_churn_label else FAIL,
+        f'uses_native_churn_label={adapter.uses_native_churn_label} (must be False '
+        'for the temporal experiment)')
+
+    return rows
+
+
 def run_preflight(
     targets=None,
     include_smote=True,
@@ -276,6 +369,7 @@ def run_preflight(
         rows.extend(_check_input_files(ds))
 
     deep = {ds for ds in targets if ds in USER_DISJOINT_DATASETS}
+    temporal_deep = {ds for ds in targets if ds in TEMPORAL_VALIDITY_DATASETS}
     for ds in targets:
         input_ok = all(
             r['status'] == PASS for r in rows
@@ -292,6 +386,8 @@ def run_preflight(
             rows.extend(_check_user_disjoint(ds))
         if ds in ABLATION_FIX_DATASETS:
             rows.extend(_check_ablation_groups(ds))
+        if ds in temporal_deep:
+            rows.extend(_check_temporal_validity(ds))
 
     if include_smote:
         rows.extend(_check_smote(*targets))

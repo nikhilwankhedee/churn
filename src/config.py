@@ -30,6 +30,17 @@ else:
 OLIST_DIR: str = "/kaggle/input/datasets/olistbr/brazilian-ecommerce"
 RETAILROCKET_EVENTS: str = "/kaggle/input/datasets/retailrocket/ecommerce-dataset/events.csv"
 REES46_FILE: str = "/kaggle/input/datasets/fridrichmrtn/e-commerce-churn-dataset-rees46/rees46_customer_model.csv"
+# Raw event-level REES46 dataset used for the temporal inactivity experiment.
+# "ecommerce-behavior-data-from-multi-category-store" ships one CSV per month
+# (2019-Oct..2020-Apr), each with event_time, event_type, product_id,
+# category_id, category_code, brand, price, user_id, user_session.  Each row is
+# an event (NOT a per-customer row) — this is the clean temporal source, in
+# contrast to the native-label rees46_customer_model.csv above.
+REES46_MULTICATEGORY_DIR: str = "/kaggle/input/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store/"
+REES46_MULTICATEGORY_FILES: list = [
+    "2019-Oct.csv", "2019-Nov.csv", "2019-Dec.csv",
+    "2020-Jan.csv", "2020-Feb.csv", "2020-Mar.csv", "2020-Apr.csv",
+]
 INSTACART_DIR: str = "/kaggle/input/datasets/psparks/instacart-market-basket-analysis"
 TELCO_FILE: str = "/kaggle/input/datasets/blastchar/telco-customer-churn/WA_Fn-UseC_-Telco-Customer-Churn.csv"
 ONLINE_RETAIL_FILE: str = "/kaggle/input/datasets/nikhilwankhedee/online-retail-ii/online_retail_II.xlsx"

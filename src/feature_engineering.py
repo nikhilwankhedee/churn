@@ -364,11 +364,14 @@ def _engineer_cadence(
     cadence = pd.DataFrame(index=timeline.index)
 
     cadence['customer_lifetime_days'] = lifetime.clip(lower=0)
-    cadence['avg_days_between_orders'] = np.where(
-        timeline['n_orders'] > 1,
-        cadence['customer_lifetime_days'] / (timeline['n_orders'] - 1),
-        0.0,
-    ).clip(lower=0)
+    cadence['avg_days_between_orders'] = np.clip(
+        np.where(
+            timeline['n_orders'] > 1,
+            cadence['customer_lifetime_days'] / (timeline['n_orders'] - 1),
+            0.0,
+        ),
+        a_min=0, a_max=None,
+    )
 
     lifetime_months = cadence['customer_lifetime_days'] / 30.44
     cadence['avg_orders_per_month'] = np.where(

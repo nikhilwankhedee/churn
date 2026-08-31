@@ -369,6 +369,21 @@ def run_pipeline(
         len(test_features), churn_rate_test * 100,
     )
 
+    # ── Hard temporal-validity assertions (datasets that implement them) ──
+    if hasattr(adapter, 'assert_temporal_validity'):
+        logger.info("── Temporal validity assertions ──")
+        checks = adapter.assert_temporal_validity(
+            df=df,
+            train_cutoff=train_cutoff,
+            test_cutoff=test_cutoff,
+            labels_train=train_labels_df,
+            labels_test=test_labels_df,
+            features_train=train_features,
+            features_test=test_features,
+        )
+        for check in checks:
+            logger.validation("TemporalValidity | PASS — %s", check)
+
     # ── Behavioral sanity checks (Layer 2) ──────────────────────────
     logger.info("── Layer 2: Behavioral sanity checks ──")
     train_labels_for_bh = train_labels_df.reset_index()
