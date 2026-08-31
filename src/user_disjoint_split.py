@@ -131,16 +131,13 @@ def compute_user_disjoint_cohorts(
     test_users = first_event[test_mask].index
 
     # Excluded: users that cannot yield a valid cohort (reported, not silent).
+    # Hash-based set membership — np.isin on object dtype degenerates to an
+    # O(n*m) Python loop that hangs on large event datasets (e.g. RetailRocket
+    # ~1.1M x ~1.4M ids), so keep ids in a set instead.
     all_users = events[STD_CUSTOMER_ID].unique()
-    excluded = all_users[
-        ~np.isin(
-            all_users,
-            np.concatenate([
-                np.asarray(train_users, dtype=object),
-                np.asarray(test_users, dtype=object),
-            ]),
-        )
-    ]
+    kept = set(np.asarray(train_users, object))
+    kept.update(np.asarray(test_users, object))
+    excluded = np.asarray([u for u in all_users if u not in kept], dtype=object)
 
     train_users = pd.Index(train_users, name=STD_CUSTOMER_ID)
     test_users = pd.Index(test_users, name=STD_CUSTOMER_ID)
