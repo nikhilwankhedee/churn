@@ -215,7 +215,14 @@ class InstacartAdapter(BaseDatasetAdapter):
 
         label_rows = []
         feature_rows = []
-        for user_id, user_orders in order_level.groupby("customer_id"):
+        total_eligible = len(eligible_users)
+        logger.info("User-relative split: %d eligible users", total_eligible)
+        for i, (user_id, user_orders) in enumerate(order_level.groupby("customer_id"), 1):
+            if i % 10000 == 0 or i == 1:
+                logger.info(
+                    "User-relative split progress: %d/%d users (%d%%)",
+                    i, total_eligible, int(100 * i / total_eligible),
+                )
             user_orders = user_orders.sort_values("order_number")
             split_idx = max(1, int(len(user_orders) * train_ratio))
             train_orders = user_orders.iloc[:split_idx]

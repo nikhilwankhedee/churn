@@ -15,6 +15,9 @@ from src.config import (
     DATA_DIR, ON_KAGGLE, LASTFM_PARQUET, LASTFM_PROFILE, RANDOM_SEED,
 )
 from src.datasets.base import BaseDatasetAdapter
+from src.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 LOCAL_LASTFM_PARQUET = "lastfm-dataset-1k.snappy.parquet"
@@ -121,7 +124,15 @@ class LastFMAdapter(BaseDatasetAdapter):
 
         labels = []
         features = []
-        for user_id, user_df in df.groupby("customer_id"):
+        users = list(df.groupby("customer_id"))
+        total = len(users)
+        logger.info("Last.fm user-relative split: %d users", total)
+        for i, (user_id, user_df) in enumerate(users, 1):
+            if i % 100 == 0 or i == 1:
+                logger.info(
+                    "Last.fm split progress: %d/%d users (%d%%)",
+                    i, total, int(100 * i / total),
+                )
             user_df = user_df.sort_values("event_time")
             if len(user_df) < 50:
                 continue
