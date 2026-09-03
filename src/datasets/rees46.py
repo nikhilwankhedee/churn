@@ -31,6 +31,7 @@ branch (create_churn_labels + engineer_features).
 Data source: https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store
 """
 import os
+import gc
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -47,6 +48,30 @@ logger = get_logger(__name__)
 
 # Local (non-Kaggle) fallback directory for the multi-category monthly files.
 LOCAL_MULTICATEGORY_DIR = os.path.join("rees46_multicategory")
+
+# Read chunk size when down-casting dtype pressure per monthly file stays low.
+# Individual monthly CSVs are streamed as objects first, then converted once.
+_READ_CHUNK = 2_000_000
+
+# Columns with highly repeated string values across ~19M events — convert to
+# category at load time to cut peak memory massively.  user_session/event_type/
+# category_code/brand repeat heavily; product_id/category_id/user_id are numeric.
+_STRING_CATEGORY_COLS = ["event_type", "category_code", "brand", "user_session"]
+
+# Numeric ID columns down-cast from int64 to int32 where the range allows.
+_INT_DOWNCAST_COLS = ["product_id", "category_id", "user_id"]
+
+# Efficient read-time dtypes for the multi-category schema.  Only the columns we
+# are confident about are pinned; anything else is left to pandas inference.
+# Casting repeated strings to "category" here is the single biggest peak-memory
+# reduction (~50 bytes/row of object pointer+heap down to a few bytes/row).
+_CSV_DTYPES = {
+    "event_type": "category",
+    "product_id": "int64",
+    "category_id": "int64",
+    "price": "float64",
+    "user_id": "int64",
+}
 
 # Event types in the raw multi-category dataset, normalised onto the shared
 # feature-engineering vocabulary (view / cart_add / purchase).
@@ -111,18 +136,49 @@ class REES46Adapter(BaseDatasetAdapter):
                 "file) is intentionally NOT used — it has no per-event timestamps."
             )
 
+        # Read each monthly file with a lean schema (only the multi-category
+        # columns), then convert the heavy repeated string columns to category
+        # and downcast numerics BEFORE the frame is concatenated — this keeps
+        # the peak a single copy's width rather than object-backed strings.
         frames = []
         for path in files:
             logger.info("Loading REES46 monthly file: %s", path)
-            # All columns are read as-is; heavy numeric/categorical coercion is
-            # deferred to preprocess() to keep the load lean.
-            df = pd.read_csv(path)
-            frames.append(df)
-            logger.info("  -> %d events", len(df))
+            df = pd.read_csv(path, dtype=_CSV_DTYPES)
 
+            # Column-level optimisation in place (no extra copies).
+            for col in _STRING_CATEGORY_COLS:
+                if col in df.columns:
+                    # category needs at least 2 distinct non-null values per
+                    # file; falling back to str keeps semantics identical.
+                    try:
+                        df[col] = df[col].astype("category")
+                    except (TypeError, ValueError):
+                        pass
+
+            for col in _INT_DOWNCAST_COLS:
+                if col in df.columns and df[col].dtype.name == "int64":
+                    lo, hi = df[col].min(), df[col].max()
+                    if lo >= np.iinfo(np.int32).min and hi <= np.iinfo(np.int32).max:
+                        df[col] = df[col].astype(np.int32)
+
+            if "price" in df.columns and df["price"].dtype == np.float64:
+                df["price"] = df["price"].astype(np.float32)
+
+            frames.append(df)
+            logger.info("  -> %d events (%.1f MB)",
+                        len(df), df.memory_usage(deep=True).sum() / 1024**2)
+
+        # Concatenate once; the input per-month frames are small (category +
+        # downcast) so the concat does not double peak memory.
         events = pd.concat(frames, ignore_index=True)
-        logger.info("REES46 total: %d events x %d cols", events.shape[0], events.shape[1])
-        logger.info("REES46 event types: %s", sorted(events['event_type'].unique().tolist()))
+        # Free the per-month frames as soon as they're folded into `events`.
+        del frames
+        gc.collect()
+
+        logger.info("REES46 total: %d events x %d cols",
+                    events.shape[0], events.shape[1])
+        logger.info("REES46 event types: %s",
+                    sorted(events['event_type'].unique().tolist()))
         return events
 
     # ── Preprocessing ────────────────────────────────────────────────
