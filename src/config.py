@@ -41,6 +41,16 @@ REES46_MULTICATEGORY_FILES: list = [
     "2019-Oct.csv", "2019-Nov.csv", "2019-Dec.csv",
     "2020-Jan.csv", "2020-Feb.csv", "2020-Mar.csv", "2020-Apr.csv",
 ]
+# The Kaggle dataset (v8 "Oct and Nov") ships only 2019-Oct/2019-Nov; the
+# remaining monthly files are published as .csv.gz archives by the author at:
+#   https://data.rees46.com/datasets/marketplace/
+# Missing months are auto-downloaded and cached under REES46_CACHE_DIR, so the
+# 90-day temporal inactivity experiment always gets the full 7-month span.
+REES46_EXTERNAL_URL_BASE: str = "https://data.rees46.com/datasets/marketplace"
+REES46_CACHE_DIR: str = (
+    os.path.join(DATA_DIR, "rees46_multicategory")
+    if not ON_KAGGLE else "/kaggle/working/rees46_multicategory"
+)
 INSTACART_DIR: str = "/kaggle/input/datasets/psparks/instacart-market-basket-analysis"
 TELCO_FILE: str = "/kaggle/input/datasets/blastchar/telco-customer-churn/WA_Fn-UseC_-Telco-Customer-Churn.csv"
 ONLINE_RETAIL_FILE: str = "/kaggle/input/datasets/nikhilwankhedee/online-retail-ii/online_retail_II.xlsx"

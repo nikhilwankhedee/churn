@@ -32,6 +32,7 @@ Data source: https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-f
 """
 import os
 import gc
+import urllib.request
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -41,12 +42,14 @@ from src.datasets.base import BaseDatasetAdapter
 from src.config import (
     ON_KAGGLE, DATA_DIR, RANDOM_SEED,
     REES46_MULTICATEGORY_DIR, REES46_MULTICATEGORY_FILES,
+    REES46_EXTERNAL_URL_BASE, REES46_CACHE_DIR,
 )
 from src.utils import get_logger
 
 logger = get_logger(__name__)
 
 # Local (non-Kaggle) fallback directory for the multi-category monthly files.
+# Equal to REES46_CACHE_DIR outside Kaggle; kept for backward compatibility.
 LOCAL_MULTICATEGORY_DIR = os.path.join("rees46_multicategory")
 
 # Read chunk size when down-casting dtype pressure per monthly file stays low.
@@ -116,16 +119,90 @@ class REES46Adapter(BaseDatasetAdapter):
         return os.path.join(DATA_DIR, LOCAL_MULTICATEGORY_DIR)
 
     def _resolve_monthly_files(self) -> List[str]:
-        """Return the paths of the monthly multi-category CSVs that exist."""
+        """Return the paths of the monthly multi-category files that exist.
+
+        Resolution order per expected file:
+          1. the Kaggle input dir (raw 2019-Oct.csv / 2019-Nov.csv)
+          2. the cache dir as a plain .csv
+          3. the cache dir as a .csv.gz (downloaded archive, read straight from
+             disk — pandas infers gzip from the extension)
+        Files available nowhere locally are left out; ``_ensure_files_cached``
+        is responsible for materialising them before ``load_raw_data``.
+        """
         base = self._multicategory_dir()
         present = []
         for fname in REES46_MULTICATEGORY_FILES:
-            path = os.path.join(base, fname)
-            if os.path.isfile(path):
-                present.append(path)
+            input_csv = os.path.join(base, fname)
+            if os.path.isfile(input_csv):
+                present.append(input_csv)
+                continue
+            cache_csv = os.path.join(REES46_CACHE_DIR, fname)
+            cache_gz = cache_csv + ".gz"
+            if os.path.isfile(cache_csv):
+                present.append(cache_csv)
+            elif os.path.isfile(cache_gz):
+                present.append(cache_gz)
         return present
 
+    def _missing_monthly_files(self) -> List[str]:
+        """Filenames not yet available in the input dir or the cache dir."""
+        available = {
+            os.path.basename(p).removesuffix(".gz")
+            for p in self._resolve_monthly_files()
+        }
+        return [f for f in REES46_MULTICATEGORY_FILES if f not in available]
+
+    def _download_and_cache(self, fname: str) -> str:
+        """Download ``{fname}.gz`` from data.rees46.com and cache it.
+
+        Returns the path to the cached ``.csv.gz``.  The archive is downloaded
+        to a ``*.tmp`` sibling first so an interrupted transfer never leaves a
+        half-written file behind the final name.
+        """
+        os.makedirs(REES46_CACHE_DIR, exist_ok=True)
+        gz_path = os.path.join(REES46_CACHE_DIR, f"{fname}.gz")
+        if os.path.isfile(gz_path) and os.path.getsize(gz_path) > 0:
+            return gz_path
+
+        url = f"{REES46_EXTERNAL_URL_BASE}/{fname}.gz"
+        tmp_path = gz_path + ".tmp"
+        try:
+            logger.info("Downloading %s -> %s", url, gz_path)
+            urllib.request.urlretrieve(url, tmp_path)
+            if os.path.getsize(tmp_path) == 0:
+                raise RuntimeError("downloaded file is empty")
+            os.replace(tmp_path, gz_path)
+            logger.info("  cached %s (%.1f MB)",
+                        gz_path, os.path.getsize(gz_path) / 1e6)
+        except Exception as exc:  # network error, HTTP 404, disk full, ...
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise RuntimeError(
+                f"Failed to fetch {url}: {exc}. You can also place the monthly "
+                f"CSVs manually in {REES46_CACHE_DIR} or attach them as a "
+                "Kaggle input under " + REES46_MULTICATEGORY_DIR + "."
+            ) from exc
+        return gz_path
+
+    def _ensure_files_cached(self) -> None:
+        """Download any missing monthly files from the official source."""
+        missing = self._missing_monthly_files()
+        if not missing:
+            return
+        if not REES46_EXTERNAL_URL_BASE:
+            raise FileNotFoundError(
+                f"REES46 monthly files missing ({missing}) and "
+                "REES46_EXTERNAL_URL_BASE is empty — cannot auto-download. "
+                f"Place the files in {REES46_CACHE_DIR} or attach them as a "
+                "Kaggle input under " + REES46_MULTICATEGORY_DIR + "."
+            )
+        logger.info("Downloading %d missing REES46 monthly file(s): %s",
+                    len(missing), missing)
+        for fname in missing:
+            self._download_and_cache(fname)
+
     def load_raw_data(self) -> pd.DataFrame:
+        self._ensure_files_cached()
         files = self._resolve_monthly_files()
         if not files:
             raise FileNotFoundError(

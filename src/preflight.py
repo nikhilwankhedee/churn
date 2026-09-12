@@ -40,6 +40,7 @@ from src.config import (
     OLIST_DIR, RETAILROCKET_EVENTS, INSTACART_DIR,
     LASTFM_PARQUET, LASTFM_PROFILE, CREDIT_CARD_FILE, TELCO_FILE,
     REES46_MULTICATEGORY_DIR, REES46_MULTICATEGORY_FILES,
+    REES46_CACHE_DIR, REES46_EXTERNAL_URL_BASE,
     PREDICTION_WINDOW_DAYS,
 )
 from src.datasets import get_dataset
@@ -94,6 +95,42 @@ def _expected_input_files(dataset: str):
 def _check_input_files(dataset: str) -> list:
     rows = []
     for label, path in _expected_input_files(dataset):
+        if dataset == 'rees46':
+            # REES46: the Kaggle dataset (v8) ships only 2019-Oct/2019-Nov;
+            # the rest are auto-downloaded from data.rees46.com into
+            # REES46_CACHE_DIR by the adapter (src/datasets/rees46.py).
+            input_csv = path
+            cache_csv = os.path.join(REES46_CACHE_DIR, label)
+            cache_gz = cache_csv + '.gz'
+            if os.path.isfile(input_csv) or os.path.isfile(cache_csv) or os.path.isfile(cache_gz):
+                rows.append({
+                    'stage': 'inputs', 'dataset': dataset, 'check': label,
+                    'status': PASS,
+                    'details': (
+                        input_csv if os.path.isfile(input_csv)
+                        else cache_csv if os.path.isfile(cache_csv)
+                        else cache_gz
+                    ),
+                })
+            elif REES46_EXTERNAL_URL_BASE:
+                rows.append({
+                    'stage': 'inputs', 'dataset': dataset, 'check': label,
+                    'status': PASS,
+                    'details': (
+                        f'{label} not cached — auto-downloaded from '
+                        f'{REES46_EXTERNAL_URL_BASE} at load time'
+                    ),
+                })
+            else:
+                rows.append({
+                    'stage': 'inputs', 'dataset': dataset, 'check': label,
+                    'status': FAIL,
+                    'details': (
+                        f'{label} not found in {REES46_MULTICATEGORY_DIR} or '
+                        f'{REES46_CACHE_DIR}, and REES46_EXTERNAL_URL_BASE is empty'
+                    ),
+                })
+            continue
         ok = os.path.isfile(path) or (
             label == 'dir' and os.path.isdir(path)
         )
